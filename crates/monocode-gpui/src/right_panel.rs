@@ -888,11 +888,9 @@ impl RightPanel {
                     .is_some_and(|r| r.read(cx).trusted(&self.project))
         });
         let fills = view.read(cx).fills();
-        let header = pane_header(
-            "right-panel-script-header",
-            def.as_ref().map_or("Panel", |d| intern(&d.title)),
-        )
-        .child(div().flex_1())
+        let title = def.as_ref().map_or("Panel", |d| intern(&d.title));
+        let header = pane_header("right-panel-script-header", title)
+            .child(div().flex_1().min_w_0().truncate().child(title))
         .when(untrusted, |d| {
             let project = self.project.clone();
             d.child(

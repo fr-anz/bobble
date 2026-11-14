@@ -125,7 +125,11 @@ impl VisualRuntime {
     }
 }
 
-fn validate_event(node: &Node, id: &str, value: &serde_json::Value) -> Option<Result<(), String>> {
+pub(crate) fn validate_event(
+    node: &Node,
+    id: &str,
+    value: &serde_json::Value,
+) -> Option<Result<(), String>> {
     let accepted = match node {
         Node::Column { children, .. }
         | Node::Row { children, .. }

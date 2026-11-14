@@ -39,6 +39,7 @@ minisign-verify = "0.2.5"
 tempfile = "3"
 flate2 = "1"
 tar = "0.4"
+mlua = { version = "0.12.2", features = ["luau"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["apple-native"] }

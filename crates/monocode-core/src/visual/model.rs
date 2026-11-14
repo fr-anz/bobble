@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_SOURCE_BYTES: usize = 64 * 1024;
 pub const MAX_NODES: usize = 512;
+pub const MAX_PANEL_NODES: usize = 2048;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -221,6 +222,32 @@ pub enum Node {
         objects: Vec<SceneObject>,
         camera: Camera,
     },
+    /// A native app view placed by a Luau panel, such as the file explorer.
+    /// Agent visuals can never contain one; only panels may.
+    Slot {
+        name: SlotName,
+        /// A fixed height in pixels; without one the slot fills the space left.
+        height: Option<f32>,
+    },
+}
+
+/// The native views a panel may place.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotName {
+    Explorer,
+    Changes,
+    History,
+}
+impl SlotName {
+    pub const ALL: [SlotName; 3] = [Self::Explorer, Self::Changes, Self::History];
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Explorer => "explorer",
+            Self::Changes => "changes",
+            Self::History => "history",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -307,15 +334,53 @@ impl Default for Camera {
 }
 
 impl Node {
+    /// Checks an agent visual: no native slots.
     pub fn validate(&self) -> Result<(), String> {
-        let mut budget = Budget::default();
+        let mut budget = Budget {
+            max_nodes: MAX_NODES,
+            ..Budget::default()
+        };
         self.validate_with(0, &mut budget)
+    }
+    /// Checks a user panel: a larger tree, and native slots, each at most once.
+    pub fn validate_panel(&self) -> Result<(), String> {
+        let mut budget = Budget {
+            max_nodes: MAX_PANEL_NODES,
+            slots: Some(Vec::new()),
+            ..Budget::default()
+        };
+        self.validate_with(0, &mut budget)
+    }
+    /// Native slots in this tree, in order.
+    pub fn slots(&self) -> Vec<SlotName> {
+        let mut out = Vec::new();
+        self.walk(&mut |node| {
+            if let Node::Slot { name, .. } = node {
+                out.push(*name);
+            }
+        });
+        out
+    }
+    fn walk(&self, f: &mut impl FnMut(&Node)) {
+        f(self);
+        if let Self::Column { children, .. }
+        | Self::Row { children, .. }
+        | Self::Grid { children, .. }
+        | Self::Card { children, .. } = self
+        {
+            for child in children {
+                child.walk(f);
+            }
+        }
     }
 
     fn validate_with(&self, depth: usize, budget: &mut Budget) -> Result<(), String> {
         budget.nodes += 1;
-        if budget.nodes > MAX_NODES || depth > 16 {
-            return Err("Visual tree exceeds 512 nodes or 16 levels".into());
+        if budget.nodes > budget.max_nodes || depth > 16 {
+            return Err(format!(
+                "Visual tree exceeds {} nodes or 16 levels",
+                budget.max_nodes
+            ));
         }
         match self {
             Self::Column { children, gap }
@@ -589,6 +654,18 @@ impl Node {
                     object.validate(budget)?;
                 }
             }
+            Self::Slot { name, height } => {
+                let Some(seen) = budget.slots.as_mut() else {
+                    return Err("Visuals cannot place native app views".into());
+                };
+                if seen.contains(name) {
+                    return Err(format!("The {} slot may appear only once", name.id()));
+                }
+                seen.push(*name);
+                if let Some(height) = height {
+                    bounded(*height as f64, 80., 4000., "slot height")?;
+                }
+            }
         }
         Ok(())
     }
@@ -611,6 +688,9 @@ fn points(values: &[f64], budget: &mut Budget) -> Result<(), String> {
 
 #[derive(Default)]
 struct Budget {
+    max_nodes: usize,
+    /// Slots seen so far; `None` where slots are not allowed.
+    slots: Option<Vec<SlotName>>,
     nodes: usize,
     text_bytes: usize,
     primitives: usize,

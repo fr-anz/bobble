@@ -52,7 +52,7 @@ impl Shell {
     }
 
     /// What the board shows for a coordinator session right now.
-    fn lead_state(&self, lead: i64, cx: &App) -> LeadState {
+    pub(super) fn lead_state(&self, lead: i64, cx: &App) -> LeadState {
         if !self.session_summaries.contains_key(&lead) && !self.sessions.contains_key(&lead) {
             return LeadState::default();
         }

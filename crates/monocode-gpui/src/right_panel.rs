@@ -6,9 +6,12 @@ use crate::{
     explorer::Explorer,
     git_status::{GitChanged, ProjectGit},
     history::History,
+    panels::{PanelId, RegistryChanged},
     project_tabs::{TabLabel, TabReveal, tab_button},
     theme::*,
+    visuals::{PanelActions, VisualChanged, VisualView},
 };
+use monocode_core::{panel::PanelAction, visual::SlotName};
 use gpui::{
     AnyElement, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, FontFeatures,
     FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Role, SharedString,
@@ -65,6 +68,9 @@ pub(crate) enum RightTab {
     /// The project's terminal, when it opens in the panel. Always last and
     /// never part of the saved order.
     Terminal,
+    /// A Luau panel. Panels follow the built-in tabs and are never saved.
+    #[serde(skip)]
+    Script(PanelId),
 }
 impl RightTab {
     fn label(self) -> &'static str {
@@ -73,14 +79,21 @@ impl RightTab {
             Self::Changes => "Changes",
             Self::Graph => "History",
             Self::Terminal => "Terminal",
+            Self::Script(_) => "Panel",
         }
+    }
+    /// Whether the tab can be saved and restored.
+    pub(crate) fn saved(self) -> bool {
+        !matches!(self, Self::Script(_))
     }
     /// loadRightPanelTabOrder: unique known tabs, the missing ones appended.
     /// Changes has no tab; the title bar's diff stat opens it.
     pub(crate) fn normalize(order: &[RightTab]) -> Vec<RightTab> {
         let mut out = Vec::new();
         for tab in order.iter().chain(&[Self::Files, Self::Graph]) {
-            if !matches!(tab, Self::Terminal | Self::Changes) && !out.contains(tab) {
+            if !matches!(tab, Self::Terminal | Self::Changes | Self::Script(_))
+                && !out.contains(tab)
+            {
                 out.push(*tab);
             }
         }
@@ -91,6 +104,33 @@ impl RightTab {
 pub(crate) enum PanelEvent {
     Tab(RightTab),
     Reordered(Vec<RightTab>),
+    /// A Luau panel asked for app actions. Untrusted actions are removed.
+    Actions(PanelId, Vec<PanelAction>),
+}
+
+/// A Luau panel's tab and, once opened, its view.
+struct ScriptTab {
+    id: PanelId,
+    title: &'static str,
+    icon: &'static str,
+    element_id: &'static str,
+    revision: u64,
+    view: Option<(Entity<VisualView>, [Subscription; 2])>,
+}
+
+/// Interns a short dynamic label for APIs that keep `&'static str`. Panel
+/// names are few and bounded, so the leak is too.
+pub(crate) fn intern(text: &str) -> &'static str {
+    use std::{collections::HashSet, sync::Mutex};
+    static NAMES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    let names = names.get_or_insert_with(HashSet::new);
+    if let Some(found) = names.get(text) {
+        return found;
+    }
+    let leaked: &'static str = Box::leak(text.to_owned().into_boxed_str());
+    names.insert(leaked);
+    leaked
 }
 
 /// Tool headers share the open-file tab bar's height and bottom rule.
@@ -265,6 +305,11 @@ pub(crate) struct RightPanel {
     reveal: Option<TabReveal>,
     skip_click: bool,
     tab_bounds: Vec<crate::popover::AnchorSlot>,
+    /// The project whose panels show, and the app snapshot they render from.
+    project: String,
+    scripts: Vec<ScriptTab>,
+    /// None until the shell first builds it; panels never render without it.
+    app: Option<serde_json::Value>,
     _subscriptions: Vec<Subscription>,
 }
 impl EventEmitter<PanelEvent> for RightPanel {}
@@ -285,10 +330,30 @@ impl RightPanel {
         let explorer = cx.new(|cx| Explorer::new(git.clone(), window, cx));
         let changes = cx.new(|cx| Changes::new(git.clone(), window, cx));
         let history = cx.new(|cx| History::new(git.clone(), window, cx));
-        let subscriptions = vec![
-            cx.observe(&git, |_, _, cx| cx.notify()),
+        let mut subscriptions = vec![
+            cx.observe(&git, |this, git, cx| {
+                let project = git.read(cx).project().to_string();
+                this.set_project(project, cx);
+                cx.notify()
+            }),
             cx.subscribe(&git, |_, _, _: &GitChanged, cx| cx.notify()),
         ];
+        let project = git.read(cx).project().to_string();
+        if let Some(registry) = crate::panels::get(cx) {
+            subscriptions.push(cx.subscribe(&registry, |this, _, _: &RegistryChanged, cx| {
+                this.sync_scripts(cx)
+            }));
+            subscriptions.push(cx.subscribe(
+                &registry,
+                |this, _, event: &crate::panels::PanelEvent, cx| {
+                    for script in &this.scripts {
+                        if let Some((view, _)) = &script.view {
+                            view.update(cx, |v, cx| v.deliver(event.name, &event.payload, cx));
+                        }
+                    }
+                },
+            ));
+        }
         let panel = cx.entity();
         let tabs = cx.new(|cx| ProjectTabs {
             panel: panel.downgrade(),
@@ -311,20 +376,206 @@ impl RightPanel {
             reveal: None,
             skip_click: false,
             tab_bounds: (0..4).map(|_| Default::default()).collect(),
+            project: String::new(),
+            scripts: Vec::new(),
+            app: None,
             _subscriptions: subscriptions,
         }
+        .with_project(project, cx)
+    }
+    fn with_project(mut self, project: String, cx: &mut Context<Self>) -> Self {
+        self.set_project(project, cx);
+        self
+    }
+    fn set_project(&mut self, project: String, cx: &mut Context<Self>) {
+        if self.project == project {
+            return;
+        }
+        self.project = project;
+        if let Some(registry) = crate::panels::get(cx) {
+            let project = self.project.clone();
+            registry.update(cx, |r, cx| r.add_project(&project, cx));
+        }
+        self.sync_scripts(cx);
+    }
+    /// Matches the script tabs to the registry, keeping open views whose
+    /// file is unchanged and reloading edited ones in place.
+    fn sync_scripts(&mut self, cx: &mut Context<Self>) {
+        let Some(registry) = crate::panels::get(cx) else {
+            return;
+        };
+        let defs: Vec<_> = registry
+            .read(cx)
+            .panels_for(&self.project)
+            .into_iter()
+            .cloned()
+            .collect();
+        let mut old = std::mem::take(&mut self.scripts);
+        for def in defs {
+            let mut tab = match old.iter().position(|t| t.id == def.id) {
+                Some(ix) => old.remove(ix),
+                None => ScriptTab {
+                    id: def.id,
+                    title: "",
+                    icon: def.icon,
+                    element_id: intern(&format!("right-panel-tab-panel-{}", def.id.0)),
+                    revision: def.revision,
+                    view: None,
+                },
+            };
+            tab.title = intern(&def.title);
+            tab.icon = def.icon;
+            if tab.revision != def.revision {
+                tab.revision = def.revision;
+                if let Some((view, _)) = &tab.view {
+                    view.update(cx, |v, cx| v.reload(def.document(), cx));
+                }
+            }
+            self.scripts.push(tab);
+        }
+        if let RightTab::Script(id) = self.tab
+            && !self.scripts.iter().any(|t| t.id == id)
+        {
+            self.select(RightTab::Files, cx);
+        }
+        let count = self.tabs().len();
+        if self.tab_bounds.len() < count {
+            self.tab_bounds.resize_with(count, Default::default);
+        }
+        self.sync_panes(cx);
+        cx.notify();
+    }
+    /// Updates the snapshot open panels render from.
+    pub(crate) fn set_app(&mut self, app: serde_json::Value, cx: &mut Context<Self>) {
+        if self.app.as_ref() == Some(&app) {
+            return;
+        }
+        for script in &self.scripts {
+            if let Some((view, _)) = &script.view {
+                view.update(cx, |v, cx| v.set_app(&app, cx));
+            }
+        }
+        let first = self.app.is_none();
+        self.app = Some(app);
+        // The selected panel was waiting for its first snapshot.
+        if first && let RightTab::Script(id) = self.tab {
+            self.script_view(id, cx);
+            self.sync_panes(cx);
+            cx.notify();
+        }
+    }
+    /// Whether a Luau panel is on screen, so its snapshot is worth building.
+    pub(crate) fn showing_script(&self) -> bool {
+        let tab = self.sidebar_tab.unwrap_or(self.tab);
+        (self.shown || self.sidebar_tab.is_some()) && matches!(tab, RightTab::Script(_))
+    }
+    /// Panels by title and file name, for `host.select_tab`.
+    pub(crate) fn find_tab(&self, name: &str, cx: &App) -> Option<RightTab> {
+        let name = name.trim().to_lowercase();
+        match name.as_str() {
+            "explorer" | "files" => return Some(RightTab::Files),
+            "history" | "graph" => return Some(RightTab::Graph),
+            "changes" => return Some(RightTab::Changes),
+            "terminal" if self.terminal_tab => return Some(RightTab::Terminal),
+            _ => {}
+        }
+        let registry = crate::panels::get(cx)?;
+        let registry = registry.read(cx);
+        self.scripts
+            .iter()
+            .find(|t| {
+                t.title.to_lowercase() == name
+                    || registry
+                        .panel(t.id)
+                        .is_some_and(|d| d.stem().to_lowercase() == name)
+            })
+            .map(|t| RightTab::Script(t.id))
+    }
+    #[cfg(test)]
+    pub(crate) fn script_view_for_test(&self, id: PanelId) -> Option<Entity<VisualView>> {
+        self.scripts
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.view.as_ref().map(|(v, _)| v.clone()))
+    }
+    /// The panel's view, created on first use.
+    fn script_view(&mut self, id: PanelId, cx: &mut Context<Self>) -> Option<Entity<VisualView>> {
+        let ix = self.scripts.iter().position(|t| t.id == id)?;
+        if let Some((view, _)) = &self.scripts[ix].view {
+            return Some(view.clone());
+        }
+        let app = self.app.clone()?;
+        let registry = crate::panels::get(cx)?;
+        let document = registry.read(cx).panel(id)?.document();
+        let slots: std::collections::HashMap<SlotName, gpui::AnyView> = [
+            (SlotName::Explorer, self.explorer.clone().into()),
+            (SlotName::Changes, self.changes.clone().into()),
+            (SlotName::History, self.history.clone().into()),
+        ]
+        .into_iter()
+        .collect();
+        let view = cx.new(|cx| VisualView::new_panel(document, app, slots, cx));
+        let subscriptions = [
+            cx.subscribe(&view, |this, _, _: &VisualChanged, cx| {
+                this.sync_panes(cx);
+                cx.notify();
+            }),
+            cx.subscribe(&view, move |_, _, event: &PanelActions, cx| {
+                cx.emit(PanelEvent::Actions(id, event.0.clone()));
+            }),
+        ];
+        // Actions from the first render were emitted before anyone listened.
+        self.scripts[ix].view = Some((view.clone(), subscriptions));
+        self.start_refresh(id, &view, cx);
+        Some(view)
+    }
+    /// Renders a panel again on its declared interval while it exists. The
+    /// interval is read each tick, so a reloaded file can add, change or
+    /// drop it.
+    fn start_refresh(&mut self, id: PanelId, view: &Entity<VisualView>, cx: &mut Context<Self>) {
+        let weak = view.downgrade();
+        cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(interval) = weak.read_with(cx, |v, _| v.refresh_interval()) else {
+                    break;
+                };
+                cx.background_executor()
+                    .timer(interval.unwrap_or(std::time::Duration::from_secs(1)))
+                    .await;
+                if interval.is_none() {
+                    continue;
+                }
+                let Ok(visible) = this.update(cx, |this, _| {
+                    this.showing_script() && this.tab == RightTab::Script(id)
+                }) else {
+                    break;
+                };
+                if visible && weak.update(cx, |v, cx| v.rerender(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
     pub(crate) fn tab(&self) -> RightTab {
         self.tab
     }
     /// The tabs in strip order: the saved two, with Terminal between them
-    /// when enabled.
+    /// when enabled, then the Luau panels.
     pub(crate) fn tabs(&self) -> Vec<RightTab> {
         let mut tabs = self.order.clone();
         if self.terminal_tab {
             tabs.insert(1.min(tabs.len()), RightTab::Terminal);
         }
+        tabs.extend(self.scripts.iter().map(|t| RightTab::Script(t.id)));
         tabs
+    }
+    /// The Luau panel tabs as `(element id, label, icon, tab)`.
+    pub(crate) fn script_tabs(&self) -> Vec<(&'static str, &'static str, &'static str, RightTab)> {
+        self.scripts
+            .iter()
+            .map(|t| (t.element_id, t.title, t.icon, RightTab::Script(t.id)))
+            .collect()
     }
     /// Adds or removes the Terminal tab; Explorer takes over when it goes.
     pub(crate) fn set_terminal_tab(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -369,6 +620,9 @@ impl RightPanel {
             self.reveal = Some(TabReveal::new(tab, self.tab));
         }
         self.tab = tab;
+        if let RightTab::Script(id) = tab {
+            self.script_view(id, cx);
+        }
         self.sync_panes(cx);
         cx.emit(PanelEvent::Tab(tab));
         cx.notify();
@@ -384,14 +638,34 @@ impl RightPanel {
             Some(tab) => (true, tab),
             None => (self.shown, self.tab),
         };
+        // A panel may place the built-in views as slots; wake the ones it shows.
+        let placed = match (shown, tab) {
+            (true, RightTab::Script(id)) => self
+                .scripts
+                .iter()
+                .find(|t| t.id == id)
+                .and_then(|t| t.view.as_ref())
+                .map(|(view, _)| view.read(cx).placed_slots())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         self.explorer.update(cx, |e, cx| {
-            e.set_enabled(shown && tab == RightTab::Files, cx)
+            e.set_enabled(
+                shown && tab == RightTab::Files || placed.contains(&SlotName::Explorer),
+                cx,
+            )
         });
         self.changes.update(cx, |c, cx| {
-            c.set_enabled(shown && tab == RightTab::Changes, cx)
+            c.set_enabled(
+                shown && tab == RightTab::Changes || placed.contains(&SlotName::Changes),
+                cx,
+            )
         });
         self.history.update(cx, |h, cx| {
-            h.set_enabled(shown && tab == RightTab::Graph, cx)
+            h.set_enabled(
+                shown && tab == RightTab::Graph || placed.contains(&SlotName::History),
+                cx,
+            )
         });
     }
     pub(crate) fn focus_pane(&self, window: &mut Window, cx: &mut App) {
@@ -438,7 +712,10 @@ impl RightPanel {
         let bounds: Vec<Option<Bounds<Pixels>>> = tabs
             .iter()
             .zip(&self.tab_bounds)
-            .map(|(tab, slot)| slot.get().filter(|_| *tab != RightTab::Terminal))
+            .map(|(tab, slot)| {
+                slot.get()
+                    .filter(|_| matches!(tab, RightTab::Files | RightTab::Changes | RightTab::Graph))
+            })
             .collect();
         if let Some(Some(own)) = bounds.get(from) {
             let centre = own.center().x + drag.offset;
@@ -506,11 +783,17 @@ impl RightPanel {
             .enumerate()
             .map(|(ix, tab)| {
                 let active = self.tab == tab;
-                let (id, path) = match tab {
-                    RightTab::Files => ("right-panel-tab-Explorer", "file-script"),
-                    RightTab::Changes => ("right-panel-tab-Changes", "git-branch"),
-                    RightTab::Graph => ("right-panel-tab-History", "clock"),
-                    RightTab::Terminal => ("right-panel-tab-Terminal", "terminal"),
+                let (id, path, label) = match tab {
+                    RightTab::Files => ("right-panel-tab-Explorer", "file-script", tab.label()),
+                    RightTab::Changes => ("right-panel-tab-Changes", "git-branch", tab.label()),
+                    RightTab::Graph => ("right-panel-tab-History", "clock", tab.label()),
+                    RightTab::Terminal => ("right-panel-tab-Terminal", "terminal", tab.label()),
+                    RightTab::Script(id) => self
+                        .scripts
+                        .iter()
+                        .find(|t| t.id == id)
+                        .map(|t| (t.element_id, t.icon, t.title))
+                        .unwrap_or(("right-panel-tab-panel", crate::panels::DEFAULT_ICON, "Panel")),
                 };
                 let unfolded = match progress {
                     Some((_, p)) if active => p,
@@ -530,7 +813,7 @@ impl RightPanel {
                     .child(
                         tab_button(
                             id,
-                            TabLabel::from(tab.label())
+                            TabLabel::from(label)
                                 .max_width(tab_label_width(self.tab_width, count)),
                             path,
                             active,
@@ -589,8 +872,85 @@ impl RightPanel {
     }
 }
 
+impl RightPanel {
+    fn script_pane(&mut self, id: PanelId, cx: &mut Context<Self>) -> AnyElement {
+        let Some(view) = self.script_view(id, cx) else {
+            return div().into_any_element();
+        };
+        let registry = crate::panels::get(cx);
+        let def = registry
+            .as_ref()
+            .and_then(|r| r.read(cx).panel(id).cloned());
+        let untrusted = def.as_ref().is_some_and(|d| {
+            matches!(d.scope, crate::panels::Scope::Project(_))
+                && !registry
+                    .as_ref()
+                    .is_some_and(|r| r.read(cx).trusted(&self.project))
+        });
+        let fills = view.read(cx).fills();
+        let header = pane_header(
+            "right-panel-script-header",
+            def.as_ref().map_or("Panel", |d| intern(&d.title)),
+        )
+        .child(div().flex_1())
+        .when(untrusted, |d| {
+            let project = self.project.clone();
+            d.child(
+                div()
+                    .id("trust-project-panels")
+                    .role(Role::Button)
+                    .aria_label("Trust this project's panels")
+                    .px_1p5()
+                    .rounded(px(4.))
+                    .text_size(px(11.))
+                    .text_color(content(0.6))
+                    .hover(|s| s.bg(content(0.1)).text_color(content(1.)))
+                    .cursor_pointer()
+                    .child("Trust project")
+                    .on_click(move |_, _, cx| {
+                        if let Some(registry) = crate::panels::get(cx) {
+                            registry.update(cx, |r, cx| r.set_trusted(&project, true, cx));
+                        }
+                    }),
+            )
+        })
+        .when_some(def.as_ref().map(|d| d.path.clone()), |d, path| {
+            d.child(
+                icon_action("right-panel-script-source", "Open panel source", "file-script", true)
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(PanelEvent::Actions(
+                            id,
+                            vec![PanelAction::OpenFile {
+                                path: path.to_string_lossy().into_owned(),
+                            }],
+                        ));
+                    })),
+            )
+        });
+        let body = div()
+            .id(("right-panel-script", id.0 as usize))
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .p_3()
+            .flex()
+            .flex_col()
+            .when(!fills, |d| d.overflow_y_scroll())
+            .child(view);
+        div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(body)
+            .into_any_element()
+    }
+}
+
 impl Render for RightPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane: AnyElement = match self.tab {
             RightTab::Files => self
                 .explorer
@@ -609,6 +969,7 @@ impl Render for RightPanel {
                 .into_any_element(),
             // The shell paints the terminal over this pane.
             RightTab::Terminal => div().into_any_element(),
+            RightTab::Script(id) => self.script_pane(id, cx),
         };
         div()
             .id("right-panel")

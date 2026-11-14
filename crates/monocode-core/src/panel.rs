@@ -6,7 +6,7 @@
 //! module loading or timers.
 use crate::visual::Node;
 use mlua::{
-    Function, Lua, LuaOptions, StdLib, Table, Value as LuaValue, VmState, chunk::ChunkMode,
+    chunk::ChunkMode, Function, Lua, LuaOptions, StdLib, Table, Value as LuaValue, VmState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
@@ -24,7 +24,9 @@ pub use hooks::*;
 
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MEMORY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
-const CALL_DEADLINE: Duration = Duration::from_millis(60);
+/// Panels run on the UI thread, so a call may not hold it longer than this.
+/// Tests run hundreds of suites in parallel and allow more wall time.
+const CALL_DEADLINE: Duration = Duration::from_millis(if cfg!(test) { 2000 } else { 60 });
 const MAX_DEPTH: usize = 32;
 const MAX_VALUES: usize = 100_000;
 const MAX_ACTIONS: usize = 32;
@@ -71,7 +73,9 @@ pub(crate) struct Sandbox {
 impl Sandbox {
     /// Runs `prelude` before sandboxing and returns what it evaluates to.
     pub fn new(prelude: &str, name: &str) -> Result<(Self, Table), String> {
+        // Luau's `os` has only clock, date, difftime and time.
         let libs = StdLib::MATH
+            | StdLib::OS
             | StdLib::STRING
             | StdLib::TABLE
             | StdLib::UTF8
@@ -82,8 +86,16 @@ impl Sandbox {
         lua.set_memory_limit(MEMORY_LIMIT_BYTES)
             .map_err(|e| e.to_string())?;
         let globals = lua.globals();
-        for name in ["require", "loadstring", "getfenv", "setfenv", "collectgarbage"] {
-            globals.raw_set(name, LuaValue::Nil).map_err(|e| e.to_string())?;
+        for name in [
+            "require",
+            "loadstring",
+            "getfenv",
+            "setfenv",
+            "collectgarbage",
+        ] {
+            globals
+                .raw_set(name, LuaValue::Nil)
+                .map_err(|e| e.to_string())?;
         }
         let deadline = Rc::new(Cell::new(Instant::now() + CALL_DEADLINE));
         let interrupted = Rc::new(Cell::new(false));
@@ -117,7 +129,8 @@ impl Sandbox {
         self.interrupted.set(false);
         let result = f();
         // Nothing outside a call may be interrupted.
-        self.deadline.set(Instant::now() + Duration::from_secs(3600 * 24 * 365));
+        self.deadline
+            .set(Instant::now() + Duration::from_secs(3600 * 24 * 365));
         result.map_err(|e| {
             if self.interrupted.get() {
                 format!(
@@ -254,7 +267,12 @@ impl PanelRuntime {
     }
 
     /// Delivers an app event. Returns the new tree when the panel handled it.
-    pub fn event(&mut self, name: &str, payload: &Value, app: &Value) -> Result<Option<Node>, String> {
+    pub fn event(
+        &mut self,
+        name: &str,
+        payload: &Value,
+        app: &Value,
+    ) -> Result<Option<Node>, String> {
         let app_table = self.app_table(app)?;
         let payload = to_lua(&self.sandbox.lua, payload, 0)?;
         let event: Function = self.controller.get("event").map_err(|e| e.to_string())?;
@@ -331,7 +349,9 @@ pub(crate) fn to_lua(lua: &Lua, value: &Value, depth: usize) -> Result<LuaValue,
         Value::Array(items) => {
             let table = lua.create_table_with_capacity(items.len(), 0).map_err(e)?;
             for (i, item) in items.iter().enumerate() {
-                table.raw_set(i + 1, to_lua(lua, item, depth + 1)?).map_err(e)?;
+                table
+                    .raw_set(i + 1, to_lua(lua, item, depth + 1)?)
+                    .map_err(e)?;
             }
             table.set_readonly(true);
             LuaValue::Table(table)
@@ -369,9 +389,7 @@ fn from_lua_with(value: &LuaValue, depth: usize, count: &mut usize) -> Result<Va
             if n.fract() == 0. && n.abs() < 9e15 {
                 Value::Number((*n as i64).into())
             } else {
-                Value::Number(
-                    Number::from_f64(*n).ok_or("Component numbers must be finite")?,
-                )
+                Value::Number(Number::from_f64(*n).ok_or("Component numbers must be finite")?)
             }
         }
         LuaValue::String(s) => Value::String(
@@ -444,4 +462,115 @@ pub fn discover(dir: &Path) -> Vec<PathBuf> {
     files.sort();
     files.truncate(32);
     files
+}
+
+/// A representative snapshot for checking panels outside the app.
+pub fn sample_app() -> Value {
+    serde_json::json!({
+        "project": {"path": "/work/example", "name": "example", "root": "/work/example", "trusted": true},
+        "git": {"files": 3, "additions": 42, "deletions": 7},
+        "sessions": [
+            {"id": 1, "title": "Fix the login flow", "provider": "claude", "model": "opus",
+             "busy": true, "needs_approval": false, "unread": false, "archived": false,
+             "pinned": true, "updated_at": 1_700_000_000_000u64, "active": true},
+            {"id": 2, "title": "Write release notes", "provider": "codex", "model": null,
+             "busy": false, "needs_approval": true, "unread": true, "archived": false,
+             "pinned": false, "updated_at": 1_700_000_100_000u64, "active": false}
+        ],
+        "board": [
+            {"id": "c1", "number": 1, "title": "Plan the migration", "lane": "backlog", "lead": null},
+            {"id": "c2", "number": 2, "title": "Port the settings page", "lane": "in_progress", "lead": 1}
+        ],
+        "active_session": 1
+    })
+}
+
+/// `panel check FILE [--app SNAPSHOT.json]`, `panel hook FILE` and
+/// `panel paths`, for writing panels and hooks outside the app.
+pub fn cli(args: &[String], data_dir: &Path) -> Result<Value, String> {
+    let usage = "Usage: panel check FILE [--app SNAPSHOT.json] | panel hook FILE | panel paths";
+    let read =
+        |path: &str| std::fs::read_to_string(path).map_err(|e| format!("Cannot read {path}: {e}"));
+    let name = |path: &str| {
+        Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string())
+    };
+    match args.first().map(String::as_str) {
+        Some("paths") => Ok(serde_json::json!({
+            "ok": true,
+            "panels": user_dir(data_dir),
+            "hooks": hooks_dir(data_dir),
+            "project_panels": ".placeholder/panels",
+        })),
+        Some("check") => {
+            let file = args.get(1).ok_or(usage)?;
+            let app = match args.iter().position(|a| a == "--app") {
+                Some(i) => serde_json::from_str(&read(args.get(i + 1).ok_or(usage)?)?)
+                    .map_err(|e| format!("Invalid snapshot: {e}"))?,
+                None => sample_app(),
+            };
+            let source = read(file)?;
+            let mut panel = PanelRuntime::new(&name(file), &source)?;
+            let tree = panel.render(&app)?;
+            // Press each control once, each in a fresh VM, as the visual check does.
+            let mut probes = Vec::new();
+            probe(&tree, &mut probes);
+            for (handler, value) in probes.iter().take(16) {
+                let mut fresh = PanelRuntime::new(&name(file), &source)?;
+                fresh.render(&app)?;
+                fresh
+                    .dispatch(handler, value.clone(), &app)
+                    .map_err(|e| format!("Control check failed ({handler}): {e}"))?;
+            }
+            let meta = panel.meta();
+            Ok(serde_json::json!({
+                "ok": true,
+                "title": meta.title,
+                "icon": meta.icon,
+                "refresh": meta.refresh.map(|d| d.as_secs_f64()),
+                "slots": tree.slots().iter().map(|s| s.id()).collect::<Vec<_>>(),
+                "controls": probes.len(),
+            }))
+        }
+        Some("hook") => {
+            let file = args.get(1).ok_or(usage)?;
+            let hook = HookRuntime::new(&name(file), &read(file)?)?;
+            let events: Vec<_> = HOOK_EVENTS.iter().filter(|e| hook.handles(e)).collect();
+            Ok(serde_json::json!({"ok": true, "events": events}))
+        }
+        _ => Err(usage.into()),
+    }
+}
+
+fn probe(node: &Node, out: &mut Vec<(String, Value)>) {
+    use serde_json::json;
+    match node {
+        Node::Column { children, .. }
+        | Node::Row { children, .. }
+        | Node::Grid { children, .. }
+        | Node::Card { children, .. } => children.iter().for_each(|c| probe(c, out)),
+        Node::Button {
+            handler,
+            disabled: false,
+            ..
+        } => out.push((handler.clone(), Value::Null)),
+        Node::Toggle { handler, value, .. } => out.push((handler.clone(), json!(!value))),
+        Node::Input { handler, value, .. } => out.push((handler.clone(), json!(value))),
+        Node::Select {
+            handler,
+            options,
+            selected,
+            ..
+        } => out.push((handler.clone(), json!((selected + 1) % options.len()))),
+        Node::Tabs {
+            handler,
+            labels,
+            selected,
+            ..
+        } => out.push((handler.clone(), json!((selected + 1) % labels.len()))),
+        Node::Slider { handler, min, .. } => out.push((handler.clone(), json!(min))),
+        _ => {}
+    }
 }

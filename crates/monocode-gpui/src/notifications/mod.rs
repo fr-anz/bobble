@@ -8,6 +8,7 @@ pub(crate) mod github_activity;
 pub(crate) mod harness_updates;
 pub(crate) mod layout_notice;
 pub(crate) mod linked_activity;
+pub(crate) mod panel_notice;
 pub(crate) mod platform;
 pub(crate) mod reminders;
 pub(crate) mod surface;

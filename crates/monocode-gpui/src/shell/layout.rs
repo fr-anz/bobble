@@ -591,6 +591,9 @@ impl Shell {
                 ),
             );
         }
+        if let Some(panel) = &self.right_panel {
+            tabs.extend(panel.read(cx).script_tabs());
+        }
         let count = tabs.len();
         row.pl_1p5()
             .pr(px(12. + self.window_controls))

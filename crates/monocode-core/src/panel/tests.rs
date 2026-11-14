@@ -113,7 +113,15 @@ fn snapshot_is_read_only_and_globals_are_frozen() {
 
 #[test]
 fn has_no_module_loading_or_os() {
-    for global in ["require", "loadstring", "getfenv", "setfenv", "os", "io", "debug"] {
+    for global in [
+        "require",
+        "loadstring",
+        "getfenv",
+        "setfenv",
+        "io",
+        "debug",
+        "package",
+    ] {
         let source = format!(
             "return {{ render = function() return ui.text(tostring({global} == nil)) end }}"
         );
@@ -127,8 +135,24 @@ fn has_no_module_loading_or_os() {
 }
 
 #[test]
+fn os_offers_only_time() {
+    let mut panel = PanelRuntime::new(
+        "os.luau",
+        "return { render = function() return ui.text(`{type(os.time())} {tostring(os.execute)} {tostring(os.remove)} {tostring(os.getenv)}`) end }",
+    )
+    .unwrap();
+    let tree = panel.render(&app()).unwrap();
+    assert!(
+        matches!(&tree, Node::Text { text, .. } if text == "number nil nil nil"),
+        "{tree:?}"
+    );
+}
+
+#[test]
 fn long_running_code_is_interrupted() {
-    let error = PanelRuntime::new("loop.luau", "while true do end").err().unwrap();
+    let error = PanelRuntime::new("loop.luau", "while true do end")
+        .err()
+        .unwrap();
     assert!(error.contains("time budget"), "{error}");
     let mut panel = PanelRuntime::new(
         "busy.luau",
@@ -188,9 +212,18 @@ fn slots_are_for_panels_only() {
 #[test]
 fn trees_must_be_plain_data() {
     for (name, body) in [
-        ("function.luau", "{ kind = 'text', text = print, size = 'body', color = 'ink' }"),
-        ("mixed.luau", "{ kind = 'column', gap = 1, children = { ui.text('a'), extra = 1 } }"),
-        ("gap.luau", "{ kind = 'column', gap = 1, children = { [1] = ui.text('a'), [3] = ui.text('b') } }"),
+        (
+            "function.luau",
+            "{ kind = 'text', text = print, size = 'body', color = 'ink' }",
+        ),
+        (
+            "mixed.luau",
+            "{ kind = 'column', gap = 1, children = { ui.text('a'), extra = 1 } }",
+        ),
+        (
+            "gap.luau",
+            "{ kind = 'column', gap = 1, children = { [1] = ui.text('a'), [3] = ui.text('b') } }",
+        ),
         ("nan.luau", "ui.gauge('x', 0/0)"),
         ("unknown.luau", "{ kind = 'iframe' }"),
     ] {
@@ -206,7 +239,9 @@ fn bad_programs_report_errors() {
     assert!(PanelRuntime::new("syntax.luau", "return {").is_err());
     let error = PanelRuntime::new("shape.luau", "return 1").err().unwrap();
     assert!(error.contains("must return a table"), "{error}");
-    let error = PanelRuntime::new("norender.luau", "return {}").err().unwrap();
+    let error = PanelRuntime::new("norender.luau", "return {}")
+        .err()
+        .unwrap();
     assert!(error.contains("render"), "{error}");
 }
 
@@ -269,7 +304,10 @@ return {
     )
     .unwrap();
     panel.render(&app()).unwrap();
-    assert!(panel.event("approval", &json!({}), &app()).unwrap().is_none());
+    assert!(panel
+        .event("approval", &json!({}), &app())
+        .unwrap()
+        .is_none());
     let tree = panel
         .event("turn_finished", &json!({"count": 2}), &app())
         .unwrap()
@@ -293,7 +331,7 @@ fn snapshot_lists_are_one_based() {
 const POLICY: &str = r#"
 return {
   approval = function(request)
-    if string.find(request.title, "Read", 1, true) then return "allow" end
+    if request.tool == "Read" then return "allow" end
     if string.find(request.detail, "rm -rf", 1, true) then return "deny" end
     if request.title == "Edit" then return "session" end
     return nil
@@ -308,6 +346,7 @@ fn request(title: &str, detail: &str, can_remember: bool) -> ApprovalRequest {
         session: 1,
         provider: "claude".into(),
         title: title.into(),
+        tool: ApprovalRequest::tool_from_title(title),
         detail: detail.into(),
         cwd: "/tmp".into(),
         project: "/tmp".into(),
@@ -320,7 +359,7 @@ fn approval_hooks_decide_or_defer() {
     let mut hook = HookRuntime::new("policy.luau", POLICY).unwrap();
     assert!(hook.handles("approval") && hook.handles("turn_finished"));
     assert_eq!(
-        hook.approval(&request("Read file", "", false)).unwrap(),
+        hook.approval(&request("Allow Read?", "", false)).unwrap(),
         Some(HookDecision::Allow)
     );
     assert_eq!(
@@ -347,12 +386,34 @@ fn approval_hooks_decide_or_defer() {
 }
 
 #[test]
+fn approval_titles_name_their_tool() {
+    assert_eq!(
+        ApprovalRequest::tool_from_title("Allow Bash?").as_deref(),
+        Some("Bash")
+    );
+    assert_eq!(
+        ApprovalRequest::tool_from_title("Allow mcp__github__create_issue?").as_deref(),
+        Some("mcp__github__create_issue")
+    );
+    assert_eq!(
+        ApprovalRequest::tool_from_title("Allow this command?"),
+        None
+    );
+    assert_eq!(
+        ApprovalRequest::tool_from_title("Allow file changes?"),
+        None
+    );
+}
+
+#[test]
 fn hook_files_are_checked() {
     assert!(HookRuntime::new("bad.luau", "return { approve = function() end }").is_err());
     assert!(HookRuntime::new("bad.luau", "return { approval = 1 }").is_err());
-    let mut hook =
-        HookRuntime::new("odd.luau", "return { approval = function() return 'maybe' end }")
-            .unwrap();
+    let mut hook = HookRuntime::new(
+        "odd.luau",
+        "return { approval = function() return 'maybe' end }",
+    )
+    .unwrap();
     assert!(hook.approval(&request("x", "", false)).is_err());
 }
 
@@ -377,4 +438,169 @@ fn discovers_luau_files_in_order() {
         .collect();
     assert_eq!(found, ["a.luau", "b.luau"]);
     assert!(discover(&dir.path().join("missing")).is_empty());
+}
+
+fn example_app() -> Value {
+    let _ = sample_app();
+    json!({
+        "project": {"path": "/p", "name": "demo", "root": "/p", "trusted": false},
+        "git": {"files": 3, "additions": 40, "deletions": 2},
+        "sessions": [
+            {"id": 1, "title": "Fix login", "provider": "claude", "model": null, "busy": true,
+             "needs_approval": false, "unread": false, "archived": false, "pinned": false,
+             "updated_at": 1, "active": true},
+            {"id": 2, "title": "Docs", "provider": "codex", "model": "gpt", "busy": false,
+             "needs_approval": true, "unread": true, "archived": false, "pinned": false,
+             "updated_at": 2, "active": false}
+        ],
+        "board": [
+            {"id": "a", "number": 1, "title": "Plan", "lane": "backlog", "lead": null},
+            {"id": "b", "number": 2, "title": "Build", "lane": "in_progress", "lead": 1}
+        ],
+        "active_session": 1
+    })
+}
+
+/// Renders a shipped example and presses each of its first controls.
+fn exercise(name: &str, source: &str, app: &Value) {
+    let mut panel = PanelRuntime::new(name, source).unwrap();
+    let tree = panel.render(app).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let mut handlers = Vec::new();
+    fn collect(node: &Node, out: &mut Vec<(String, Value)>) {
+        match node {
+            Node::Column { children, .. }
+            | Node::Row { children, .. }
+            | Node::Grid { children, .. }
+            | Node::Card { children, .. } => children.iter().for_each(|c| collect(c, out)),
+            Node::Button { handler, .. } => out.push((handler.clone(), Value::Null)),
+            Node::Tabs {
+                handler, labels, ..
+            } => out.push((handler.clone(), json!(labels.len() - 1))),
+            _ => {}
+        }
+    }
+    collect(&tree, &mut handlers);
+    for (handler, value) in handlers {
+        // Each press renders again, so take ids from a fresh render.
+        let mut fresh = PanelRuntime::new(name, source).unwrap();
+        fresh.render(app).unwrap();
+        fresh
+            .dispatch(&handler, value, app)
+            .unwrap_or_else(|e| panic!("{name} {handler}: {e}"));
+    }
+}
+
+#[test]
+fn shipped_panel_examples_run() {
+    let app = example_app();
+    for (name, source) in [
+        (
+            "sessions.luau",
+            include_str!("../../../../docs/native/examples/panels/sessions.luau"),
+        ),
+        (
+            "workbench.luau",
+            include_str!("../../../../docs/native/examples/panels/workbench.luau"),
+        ),
+        (
+            "board.luau",
+            include_str!("../../../../docs/native/examples/panels/board.luau"),
+        ),
+    ] {
+        exercise(name, source, &app);
+    }
+    // Empty states render too.
+    let mut empty = example_app();
+    empty["sessions"] = json!([]);
+    empty["board"] = json!([]);
+    empty["git"] = Value::Null;
+    for (name, source) in [
+        (
+            "sessions.luau",
+            include_str!("../../../../docs/native/examples/panels/sessions.luau"),
+        ),
+        (
+            "workbench.luau",
+            include_str!("../../../../docs/native/examples/panels/workbench.luau"),
+        ),
+        (
+            "board.luau",
+            include_str!("../../../../docs/native/examples/panels/board.luau"),
+        ),
+    ] {
+        PanelRuntime::new(name, source)
+            .unwrap()
+            .render(&empty)
+            .unwrap_or_else(|e| panic!("{name} (empty): {e}"));
+    }
+}
+
+#[test]
+fn workbench_example_places_one_slot() {
+    let source = include_str!("../../../../docs/native/examples/panels/workbench.luau");
+    let mut panel = PanelRuntime::new("workbench.luau", source).unwrap();
+    let tree = panel.render(&example_app()).unwrap();
+    assert_eq!(tree.slots(), [SlotName::Changes]);
+}
+
+#[test]
+fn shipped_hook_example_decides() {
+    let source = include_str!("../../../../docs/native/examples/hooks/approvals.luau");
+    let mut hook = HookRuntime::new("approvals.luau", source).unwrap();
+    assert_eq!(
+        hook.approval(&request("Allow Read?", "src/main.rs", true))
+            .unwrap(),
+        Some(HookDecision::Allow)
+    );
+    assert_eq!(
+        hook.approval(&request(
+            "Allow Bash?",
+            "git push --force origin main",
+            true
+        ))
+        .unwrap(),
+        Some(HookDecision::Deny)
+    );
+    assert_eq!(
+        hook.approval(&request("Allow Bash?", "cargo test", true))
+            .unwrap(),
+        None
+    );
+    hook.call(
+        "turn_finished",
+        &json!({"session": 1, "title": "Fix", "cancelled": false}),
+    )
+    .unwrap();
+    assert_eq!(
+        hook.take_actions(),
+        [PanelAction::Notify {
+            message: "Fix finished".into()
+        }]
+    );
+}
+
+#[test]
+fn cli_checks_panels_and_hooks() {
+    let dir = tempfile::tempdir().unwrap();
+    let panel = dir.path().join("p.luau");
+    std::fs::write(&panel, COUNTER).unwrap();
+    let hook = dir.path().join("h.luau");
+    std::fs::write(&hook, POLICY).unwrap();
+    let arg = |p: &std::path::Path| p.to_string_lossy().into_owned();
+    let out = cli(&["check".into(), arg(&panel)], dir.path()).unwrap();
+    assert_eq!(out["ok"], true);
+    assert_eq!(out["title"], "Counter");
+    assert_eq!(out["controls"], 2);
+    let out = cli(&["hook".into(), arg(&hook)], dir.path()).unwrap();
+    assert_eq!(out["events"], json!(["approval", "turn_finished"]));
+    let broken = dir.path().join("b.luau");
+    std::fs::write(
+        &broken,
+        "return { render = function() return ui.text(nil) end }",
+    )
+    .unwrap();
+    assert!(cli(&["check".into(), arg(&broken)], dir.path()).is_err());
+    assert!(cli(&[], dir.path()).is_err());
+    let out = cli(&["paths".into()], dir.path()).unwrap();
+    assert!(out["panels"].as_str().unwrap().ends_with("panels"));
 }

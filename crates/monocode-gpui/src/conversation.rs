@@ -262,6 +262,58 @@ impl Drop for Conversation {
     }
 }
 impl Conversation {
+    /// Lets Luau approval hooks answer permission requests. Requests no
+    /// hook decides are returned for the user, and panels hear about them.
+    fn hook_approvals(
+        &mut self,
+        approvals: Vec<Approval>,
+        cx: &mut Context<Self>,
+    ) -> Vec<Approval> {
+        let Some(registry) = crate::panels::get(cx) else {
+            return approvals;
+        };
+        let cwd = self
+            .settings
+            .worktree_cwd
+            .clone()
+            .unwrap_or_else(|| self.summary.cwd.clone());
+        let mut left = Vec::new();
+        for approval in approvals {
+            let request = monocode_core::panel::ApprovalRequest {
+                session: self.summary.id,
+                provider: self.summary.provider.clone(),
+                title: approval.title.clone(),
+                tool: monocode_core::panel::ApprovalRequest::tool_from_title(&approval.title),
+                detail: approval.detail.clone(),
+                cwd: cwd.clone(),
+                project: self.summary.cwd.clone(),
+                can_remember: approval.can_remember,
+            };
+            let decision = registry.update(cx, |r, cx| r.approval(&request, cx));
+            let decision = decision.map(|d| match d {
+                monocode_core::panel::HookDecision::Allow => Decision::Allow,
+                monocode_core::panel::HookDecision::Session => Decision::Session,
+                monocode_core::panel::HookDecision::Deny => Decision::Deny,
+            });
+            let sent = decision.is_some_and(|decision| {
+                self.controls.as_ref().is_some_and(|controls| {
+                    controls
+                        .send(Control {
+                            id: approval.id.clone(),
+                            decision,
+                        })
+                        .is_ok()
+                })
+            });
+            if sent {
+                continue;
+            }
+            let payload = serde_json::to_value(&request).unwrap_or_default();
+            registry.update(cx, |r, cx| r.notify_panels("approval", payload, cx));
+            left.push(approval);
+        }
+        left
+    }
     /// Seed workspace metadata before an unloaded blank can render or submit.
     /// Loaded/running conversations keep their current agent settings.
     pub(crate) fn restore_worktree(
@@ -1382,7 +1434,13 @@ impl Conversation {
                             this.set_background(tasks, cx);
                         }
                         if !stopping {
-                            this.approvals.extend(update.approvals);
+                            let asked = !update.approvals.is_empty();
+                            let approvals = this.hook_approvals(update.approvals, cx);
+                            this.approvals.extend(approvals);
+                            // Hooks answered every request: nothing waits on the user.
+                            if asked && this.approvals.is_empty() && this.questions.is_empty() {
+                                this.status = "Working…".into();
+                            }
                         }
                         for id in update.approvals_resolved {
                             this.approvals.retain(|approval| approval.id != id);

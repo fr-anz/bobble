@@ -15,6 +15,7 @@ mod idle_agents;
 mod image_lightbox_tests;
 mod layout;
 mod live_agents;
+mod luau_panels;
 mod mobile_host;
 mod minion_panes;
 pub(crate) mod minions;
@@ -620,6 +621,7 @@ pub(crate) struct Shell {
     /// Board digests and task statuses last seen, and events waiting for an
     /// idle orchestrator, keyed by project.
     board_watch: board::Watch,
+    luau: luau_panels::State,
     /// Sessions an /operator thread started, by the session that started them.
     started_by: HashMap<i64, i64>,
     /// The sidebar rails under orchestrators and /operator threads.
@@ -881,6 +883,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Self {
         crate::accounts::install(store.clone(), cx);
+        crate::panels::install(store.clone(), cx);
         let remote_dir = locked(&store)
             .ok()
             .and_then(|store| store.data_dir().map(std::path::Path::to_path_buf))
@@ -1027,6 +1030,7 @@ impl Shell {
             orchestrations: HashMap::new(),
             orchestration_summaries: sidebar_metadata.orchestrations,
             board_watch: Default::default(),
+            luau: Default::default(),
             started_by: sidebar_metadata.started_by,
             rails: Default::default(),
             usage_footer: cx.new(|cx| UsageFooter::new(active_kind, cx)),
@@ -1499,17 +1503,37 @@ impl Shell {
         let session = view.read(cx);
         let busy = session.responding();
         let focused = !self.app_view_open() && self.workspace.active == Some(id);
+        let mut turn = None;
         if busy {
-            self.busy_sessions.insert(id);
+            if self.busy_sessions.insert(id) {
+                turn = Some(("turn_started", false));
+            }
             self.unseen_finished.remove(&id);
         } else if session.busy {
             // Explicit cancellation is already idle in the UI. The worker is
             // only finishing its save, so it must not announce a completed turn.
-            self.busy_sessions.remove(&id);
+            if self.busy_sessions.remove(&id) {
+                turn = Some(("turn_finished", true));
+            }
             self.unseen_finished.remove(&id);
-        } else if self.busy_sessions.remove(&id) && !focused && !session.summary.archived {
-            self.unseen_finished.insert(id);
+        } else if self.busy_sessions.remove(&id) {
+            turn = Some(("turn_finished", false));
+            if !focused && !session.summary.archived {
+                self.unseen_finished.insert(id);
+            }
         }
+        let turn_event = turn.map(|(name, cancelled)| {
+            (
+                name,
+                serde_json::json!({
+                    "session": id,
+                    "title": session.summary.title,
+                    "provider": session.summary.provider,
+                    "cwd": session.summary.cwd,
+                    "cancelled": cancelled,
+                }),
+            )
+        });
         if focused || session.summary.archived {
             self.unseen_finished.remove(&id);
         }
@@ -1530,6 +1554,9 @@ impl Shell {
         let provider = session.summary.provider.clone();
         self.session_marks[&id].update(cx, |mark, cx| mark.set(&provider, state, cx));
         self.tab_marks[&id].update(cx, |mark, cx| mark.set(&provider, tab_state, cx));
+        if let Some((name, payload)) = turn_event {
+            self.panel_event(name, payload, cx);
+        }
     }
     fn toggle_archive(&mut self, id: i64, cx: &mut Context<Self>) {
         if !self.archiving.insert(id) {
@@ -1881,9 +1908,16 @@ impl Shell {
         ));
         let changes = panel.read(cx).changes.clone();
         changes.update(cx, |c, cx| c.set_view(view, cx));
-        self.observations
-            .push(cx.subscribe(&panel, |this, _, event: &PanelEvent, cx| {
+        self.observations.push(cx.subscribe_in(
+            &panel,
+            window,
+            |this, _, event: &PanelEvent, window, cx| {
                 match event {
+                    // Luau panels come and go with their files; they are never saved.
+                    PanelEvent::Tab(tab) if !tab.saved() => {
+                        cx.notify();
+                        return;
+                    }
                     PanelEvent::Tab(tab) => {
                         this.workspace.right_panel_tab = *tab;
                         if *tab == crate::right_panel::RightTab::Terminal {
@@ -1891,9 +1925,14 @@ impl Shell {
                         }
                     }
                     PanelEvent::Reordered(order) => this.workspace.right_panel_tabs = order.clone(),
+                    PanelEvent::Actions(id, actions) => {
+                        this.panel_actions(*id, actions.clone(), window, cx);
+                        return;
+                    }
                 }
                 this.persist(cx);
-            }));
+            },
+        ));
         self.observations.push(cx.subscribe_in(
             &changes,
             window,
@@ -5304,6 +5343,10 @@ impl Shell {
     /// opens from the diff stat instead.
     fn right_tab_count(&self, cx: &App) -> usize {
         2 + usize::from(self.terminal_in_panel(cx))
+            + self
+                .right_panel
+                .as_ref()
+                .map_or(0, |p| p.read(cx).script_tabs().len())
     }
     /// The toggle's room at the end of the strip: `pl-1.5`, the button, `pr-3`.
     fn toggle_room(&self, cx: &App) -> f32 {
@@ -8567,6 +8610,8 @@ fn enter_from(leaf: &LayoutLeaf) -> (Edge, Rect) {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.keep_visible_idle_agents(cx);
+        self.observe_hooks(window, cx);
+        self.sync_panel_snapshot(cx);
         self.sync_ui_scale(window, cx);
         if self.minion_panes_unsettled(cx) {
             let this = cx.entity();

@@ -18,6 +18,12 @@ Copyright (c) 2026 mermaid-rs-renderer contributors.
 Source: https://github.com/1jehuang/mermaid-rs-renderer
 License text: docs/native/LICENSE-MERMAID-MIT
 
+Luau panels and hooks run on Luau (bundled through luau0-src 0.22.0, Luau
+0.740), copyright Roblox Corporation and Lua.org, PUC-Rio, licensed under MIT,
+through mlua 0.12.2, copyright Aleksandr Orlenko, licensed under MIT.
+Source: https://github.com/luau-lang/luau and https://github.com/mlua-rs/mlua
+License text: docs/native/LICENSE-LUAU-MIT
+
 Native window and sidebar glyphs reuse Monocode's Hugeicons Stroke Rounded set
 from @hugeicons/core-free-icons 4.3.0, copyright Hugeicons, licensed under MIT.
 Source: https://github.com/hugeicons/hugeicons

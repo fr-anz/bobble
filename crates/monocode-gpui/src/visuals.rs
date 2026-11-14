@@ -5,8 +5,12 @@ use gpui::{
     PathBuilder, Pixels, Point, Render, Role, SharedString, Stateful, Window, canvas, div, fill,
     point, prelude::*, px, relative, size,
 };
-use monocode_core::visual::{
-    Camera, Node, SceneObject, Shape, TextSize, ThemeColor, VisualDocument, VisualRuntime,
+use monocode_core::{
+    panel::{PanelAction, PanelRuntime},
+    visual::{
+        Camera, Node, SceneObject, Shape, SlotName, TextSize, ThemeColor, VisualDocument,
+        VisualRuntime,
+    },
 };
 use serde_json::{Value, json};
 use std::{
@@ -23,9 +27,20 @@ mod tests;
 
 /// The transcript must remeasure this row when its content changes.
 pub(crate) struct VisualChanged;
+/// A panel asked the app to do something; the host decides.
+pub(crate) struct PanelActions(pub Vec<PanelAction>);
+/// An agent's JavaScript visual or a user's Luau panel.
+enum Program {
+    Visual(VisualRuntime),
+    Panel(PanelRuntime),
+}
 pub(crate) struct VisualView {
     document: VisualDocument,
-    runtime: Option<VisualRuntime>,
+    runtime: Option<Program>,
+    /// Set for a Luau panel: the snapshot it renders from.
+    panel: Option<Value>,
+    /// Native views a panel may place.
+    slots: HashMap<SlotName, gpui::AnyView>,
     tree: Option<Node>,
     error: Option<String>,
     width: Rc<Cell<f32>>,
@@ -43,6 +58,7 @@ pub(crate) struct VisualView {
     motion: dither::Motion,
 }
 impl EventEmitter<VisualChanged> for VisualView {}
+impl EventEmitter<PanelActions> for VisualView {}
 struct SliderDrag {
     key: String,
     handler: String,
@@ -163,9 +179,39 @@ fn activated(event: &gpui::KeyDownEvent) -> bool {
 
 impl VisualView {
     pub(crate) fn new(document: VisualDocument, _cx: &mut Context<Self>) -> Self {
-        let mut this = Self {
+        let mut this = Self::new_unloaded(document);
+        this.initialize();
+        this
+    }
+    /// Draws the visual inside an answer, captioned, or back in its own row.
+    pub(crate) fn set_inline(&mut self, caption: Option<String>, cx: &mut Context<Self>) {
+        if self.inline != caption {
+            self.inline = caption;
+            self.changed(cx);
+        }
+    }
+    /// A Luau panel. `document.source` is its program and `document.title`
+    /// labels its errors.
+    pub(crate) fn new_panel(
+        document: VisualDocument,
+        app: Value,
+        slots: HashMap<SlotName, gpui::AnyView>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self::new_unloaded(document);
+        this.panel = Some(app);
+        this.slots = slots;
+        this.inline = Some(String::new());
+        this.initialize();
+        this.emit_actions(cx);
+        this
+    }
+    fn new_unloaded(document: VisualDocument) -> Self {
+        Self {
             document,
             runtime: None,
+            panel: None,
+            slots: HashMap::new(),
             tree: None,
             error: None,
             width: Rc::new(Cell::new(640.)),
@@ -179,15 +225,6 @@ impl VisualView {
             scene_cache: HashMap::new(),
             inline: None,
             motion: dither::Motion(std::time::Instant::now()),
-        };
-        this.initialize();
-        this
-    }
-    /// Draws the visual inside an answer, captioned, or back in its own row.
-    pub(crate) fn set_inline(&mut self, caption: Option<String>, cx: &mut Context<Self>) {
-        if self.inline != caption {
-            self.inline = caption;
-            self.changed(cx);
         }
     }
     fn initialize(&mut self) {
@@ -195,14 +232,22 @@ impl VisualView {
         self.error = None;
         self.tree = None;
         self.runtime = None;
-        match self
-            .document
-            .validate()
-            .and_then(|()| VisualRuntime::new(&self.document.source))
-            .and_then(|mut runtime| {
-                let tree = runtime.render()?;
-                Ok((runtime, tree))
-            }) {
+        let started = match &self.panel {
+            Some(app) => PanelRuntime::new(&self.document.title, &self.document.source)
+                .and_then(|mut runtime| {
+                    let tree = runtime.render(app)?;
+                    Ok((Program::Panel(runtime), tree))
+                }),
+            None => self
+                .document
+                .validate()
+                .and_then(|()| VisualRuntime::new(&self.document.source))
+                .and_then(|mut runtime| {
+                    let tree = runtime.render()?;
+                    Ok((Program::Visual(runtime), tree))
+                }),
+        };
+        match started {
             Ok((runtime, tree)) => {
                 self.runtime = Some(runtime);
                 self.tree = Some(tree);
@@ -210,15 +255,100 @@ impl VisualView {
             Err(error) => self.error = Some(error),
         }
     }
+    /// The slots the current tree places, so the host can wake those views.
+    pub(crate) fn placed_slots(&self) -> Vec<SlotName> {
+        self.tree.as_ref().map(Node::slots).unwrap_or_default()
+    }
+    #[cfg(test)]
+    pub(crate) fn tree(&self) -> Option<&Node> {
+        assert!(self.error.is_none(), "{:?}", self.error);
+        self.tree.as_ref()
+    }
+    #[cfg(test)]
+    pub(crate) fn press(&mut self, handler: &str, value: Value, cx: &mut Context<Self>) {
+        self.dispatch(handler, value, cx);
+    }
+    /// Whether a slot without a height fills the panel, so it must not scroll.
+    pub(crate) fn fills(&self) -> bool {
+        self.tree.as_ref().is_some_and(fill_slot)
+    }
+    /// A panel's declared periodic refresh.
+    pub(crate) fn refresh_interval(&self) -> Option<std::time::Duration> {
+        match &self.runtime {
+            Some(Program::Panel(runtime)) => runtime.meta().refresh,
+            _ => None,
+        }
+    }
+    /// Gives a panel a new snapshot; it renders again only when it changed.
+    pub(crate) fn set_app(&mut self, app: &Value, cx: &mut Context<Self>) {
+        if self.panel.as_ref() == Some(app) {
+            return;
+        }
+        self.panel = Some(app.clone());
+        self.rerender(cx);
+    }
+    /// Renders a panel again with its current snapshot.
+    pub(crate) fn rerender(&mut self, cx: &mut Context<Self>) {
+        let (Some(Program::Panel(runtime)), Some(app)) = (self.runtime.as_mut(), &self.panel)
+        else {
+            return;
+        };
+        let result = runtime.render(app);
+        self.apply(result, cx);
+    }
+    /// Delivers an app event to a panel's `on` handler.
+    pub(crate) fn deliver(&mut self, event: &str, payload: &Value, cx: &mut Context<Self>) {
+        let (Some(Program::Panel(runtime)), Some(app)) = (self.runtime.as_mut(), &self.panel)
+        else {
+            return;
+        };
+        match runtime.event(event, payload, app) {
+            Ok(None) => self.emit_actions(cx),
+            Ok(Some(tree)) => self.apply(Ok(tree), cx),
+            Err(error) => self.apply(Err(error), cx),
+        }
+    }
+    /// Loads a panel's program again, as after its file changed.
+    pub(crate) fn reload(&mut self, document: VisualDocument, cx: &mut Context<Self>) {
+        self.document = document;
+        self.slider_drag = None;
+        self.scene_drag = None;
+        self.initialize();
+        self.emit_actions(cx);
+        self.changed(cx);
+    }
+    fn emit_actions(&mut self, cx: &mut Context<Self>) {
+        if let Some(Program::Panel(runtime)) = self.runtime.as_mut() {
+            let actions = runtime.take_actions();
+            if !actions.is_empty() {
+                cx.emit(PanelActions(actions));
+            }
+        }
+    }
+    fn apply(&mut self, result: Result<Node, String>, cx: &mut Context<Self>) {
+        match result {
+            Ok(tree) => {
+                self.revision = self.revision.wrapping_add(1);
+                self.tree = Some(tree);
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
+        }
+        self.emit_actions(cx);
+        self.changed(cx);
+    }
     fn changed(&self, cx: &mut Context<Self>) {
         cx.emit(VisualChanged);
         cx.notify();
     }
     fn dispatch(&mut self, handler: &str, value: Value, cx: &mut Context<Self>) {
-        let Some(runtime) = self.runtime.as_mut() else {
-            return;
+        let result = match (self.runtime.as_mut(), &self.panel) {
+            (Some(Program::Visual(runtime)), _) => runtime.dispatch(handler, value),
+            (Some(Program::Panel(runtime)), Some(app)) => runtime.dispatch(handler, value, app),
+            _ => return,
         };
-        match runtime.dispatch(handler, value) {
+        self.emit_actions(cx);
+        match result {
             Ok(tree) => {
                 self.revision = self.revision.wrapping_add(1);
                 // A render refreshes callback capabilities. A pointer drag and a
@@ -279,6 +409,11 @@ impl VisualView {
             | Node::Grid { children, gap, .. }
             | Node::Card { children, gap } => {
                 let mut layout = div().w_full().min_w_0().gap(px(*gap));
+                // A slot without a height fills what its panel leaves over.
+                let fills = fill_slot(node);
+                if fills {
+                    layout = layout.flex_1().min_h_0();
+                }
                 if matches!(node, Node::Card { .. }) {
                     layout = layout
                         .p_4()
@@ -304,6 +439,7 @@ impl VisualView {
                             .when(matches!(node, Node::Row { .. }), |d| {
                                 d.flex_1().min_w(px(120.))
                             })
+                            .when(fill_slot(child), |d| d.flex_1().min_h_0().flex().flex_col())
                             .child(element),
                     );
                 }
@@ -868,6 +1004,22 @@ impl VisualView {
                 objects,
                 camera,
             } => self.scene(key, *height, objects.clone(), camera.clone(), cx),
+            Node::Slot { name, height } => {
+                let slot = div().w_full().min_w_0().flex().flex_col().map(|d| match height {
+                    Some(h) => d.h(px(*h)),
+                    None => d.flex_1().min_h(px(240.)),
+                });
+                match self.slots.get(name) {
+                    Some(view) => slot.child(view.clone()).into_any_element(),
+                    None => slot
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(12.))
+                        .text_color(content(0.5))
+                        .child(format!("The {} view is not available here", name.id()))
+                        .into_any_element(),
+                }
+            }
         }
     }
     fn scene(
@@ -1065,6 +1217,12 @@ impl Render for VisualView {
         self.orbits.retain(|key, _| self.active.contains(key));
         self.scene_cache.retain(|key, _| self.active.contains(key));
         let inline = self.inline.clone();
+        let fills = self.tree.as_ref().is_some_and(fill_slot);
+        let failure = if self.panel.is_some() {
+            "Panel error"
+        } else {
+            "Visual could not update"
+        };
         // A visual in its own row is titled; placed in prose, it is captioned.
         let header = inline.is_none().then(|| {
             div()
@@ -1078,7 +1236,7 @@ impl Render for VisualView {
             .relative()
             .w_full()
             .min_w_0()
-            .flex_shrink_0()
+            .map(|d| if fills { d.flex_1().min_h_0().h_full() } else { d.flex_shrink_0() })
             .flex()
             .flex_col()
             .gap_3()
@@ -1109,7 +1267,7 @@ impl Render for VisualView {
                     .border_color(color(&ThemeColor::Negative))
                     .text_size(px(12.))
                     .text_color(color(&ThemeColor::Negative))
-                    .child(format!("Visual could not update: {error}"))
+                    .child(format!("{failure}: {error}"))
             }))
             .child(
                 div()
@@ -1117,7 +1275,13 @@ impl Render for VisualView {
                     .debug_selector(|| "visual-content".into())
                     .w_full()
                     .min_w_0()
-                    .flex_shrink_0()
+                    .map(|d| {
+                        if fills {
+                            d.flex_1().min_h_0().flex().flex_col()
+                        } else {
+                            d.flex_shrink_0()
+                        }
+                    })
                     .child(body),
             )
             .children(inline.as_ref().filter(|c| !c.is_empty()).map(|caption| {
@@ -1160,6 +1324,17 @@ impl Render for VisualView {
                     this.scene_drag = None;
                 }),
             )
+    }
+}
+
+/// Whether a slot without a fixed height sits in this subtree.
+pub(crate) fn fill_slot(node: &Node) -> bool {
+    match node {
+        Node::Slot { height: None, .. } => true,
+        Node::Column { children, .. } | Node::Card { children, .. } => {
+            children.iter().any(fill_slot)
+        }
+        _ => false,
     }
 }
 

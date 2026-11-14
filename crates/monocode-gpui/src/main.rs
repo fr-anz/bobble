@@ -57,6 +57,7 @@ mod notes;
 mod notifications;
 mod pane_layout;
 mod pane_motion;
+mod panels;
 mod particle_text;
 mod phase_tile;
 mod pickers;
@@ -213,6 +214,16 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+            Err(error) => {
+                println!("{}", serde_json::json!({"ok":false,"error":error}));
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if cli_args.first().is_some_and(|a| a == "panel") {
+        match monocode_core::panel::cli(&cli_args[1..], &data_dir()) {
+            Ok(value) => println!("{value}"),
             Err(error) => {
                 println!("{}", serde_json::json!({"ok":false,"error":error}));
                 std::process::exit(1);

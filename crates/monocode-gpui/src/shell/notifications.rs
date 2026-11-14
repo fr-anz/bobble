@@ -24,6 +24,7 @@ pub(super) struct State {
     pub installed: Entity<InstalledUpdateNotice>,
     pub updater: Entity<Updater>,
     pub file_error: Entity<FileActionError>,
+    pub panel: Entity<crate::notifications::panel_notice::PanelNotice>,
     pub reminder_error: Option<String>,
     pub github: Entity<GithubActivity>,
     linked: HashMap<i64, Entity<LinkedActivity>>,
@@ -65,6 +66,7 @@ impl State {
             installed: cx.new(|_| InstalledUpdateNotice::new(None)),
             updater: updater::shared(store, cx),
             file_error: cx.new(|_| FileActionError::new()),
+            panel: cx.new(|_| Default::default()),
             reminder_error: None,
             github: cx.new(|_| GithubActivity::new(HashMap::new())),
             linked: HashMap::new(),
@@ -979,6 +981,9 @@ impl Shell {
                             minions.update(cx, |minions, cx| minions.dismiss_error(cx));
                         })),
                 ))
+            })
+            .when(state.panel.read(cx).is_visible(), |stack| {
+                stack.child(div().w(px(340.)).max_w_full().child(state.panel.clone()))
             })
             .when(state.file_error.read(cx).is_visible(), |stack| {
                 stack.child(state.file_error.clone())

@@ -44,6 +44,14 @@ you're ready.
 
 </details>
 
+## Make it yours with Luau
+
+Add your own tabs to the right panel, and automate approvals, by saving small
+[Luau](https://luau.org) files. Panels draw with the app's native components
+and can embed its Explorer, Changes and History views. Hooks can allow or deny
+an agent's permission requests by your own rules. Both run sandboxed and reload
+when you save. See [Luau panels and hooks](docs/native/panels.md).
+
 ## Bring your own agents
 
 Placeholder drives the agent CLIs you already have installed, using the accounts

@@ -1,7 +1,7 @@
 //! User hooks written in Luau. A hook file returns a table of functions named
 //! after app events. `approval` may answer a provider's permission request;
 //! every other hook only observes, and may queue `host` actions.
-use super::{PanelAction, SDK, Sandbox, from_lua, take_actions, to_lua};
+use super::{from_lua, take_actions, to_lua, PanelAction, Sandbox, SDK};
 use mlua::{Function, Table, Value as LuaValue};
 use serde::Serialize;
 use serde_json::Value;
@@ -31,11 +31,26 @@ pub struct ApprovalRequest {
     pub session: i64,
     pub provider: String,
     pub title: String,
+    /// The tool named in a title like "Allow Bash?", when there is one.
+    pub tool: Option<String>,
     pub detail: String,
     pub cwd: String,
     pub project: String,
     /// Whether the provider supports "allow for this session".
     pub can_remember: bool,
+}
+
+impl ApprovalRequest {
+    /// "Allow Bash?" → "Bash". Generic titles ("Allow this command?") name no tool.
+    pub fn tool_from_title(title: &str) -> Option<String> {
+        let name = title.strip_prefix("Allow ")?.strip_suffix('?')?;
+        (!name.is_empty()
+            && !name.contains(' ')
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_-.:".contains(c)))
+        .then(|| name.to_string())
+    }
 }
 
 pub struct HookRuntime {

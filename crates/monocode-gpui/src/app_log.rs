@@ -2,7 +2,8 @@
 //! display link restarts through the `log` crate, and without a logger those
 //! reports were dropped, so a window that stopped repainting left no trace.
 //! Warnings from every crate, plus the macOS window's info lines, go to
-//! `~/Library/Logs/Placeholder/gpui.log`.
+//! `~/Library/Logs/Placeholder/gpui.log`, or on Windows
+//! `%LOCALAPPDATA%\Placeholder\Logs\gpui.log`.
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
@@ -27,10 +28,17 @@ struct State {
 }
 
 pub(crate) fn init() {
-    let Some(home) = std::env::var_os("HOME") else {
-        return;
+    // Windows has no HOME; its log sits beside the app's data.
+    #[cfg(windows)]
+    let directory = match std::env::var_os("LOCALAPPDATA") {
+        Some(base) => PathBuf::from(base).join("Placeholder").join("Logs"),
+        None => return,
     };
-    let directory = PathBuf::from(home).join("Library/Logs/Placeholder");
+    #[cfg(not(windows))]
+    let directory = match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join("Library/Logs/Placeholder"),
+        None => return,
+    };
     if std::fs::create_dir_all(&directory).is_err() {
         return;
     }

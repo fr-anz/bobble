@@ -79,6 +79,9 @@ impl Kind {
             Self::Hermes => &[
                 ".hermes/hermes-agent/venv/bin",
                 ".hermes/hermes-agent/.venv/bin",
+                // A Python venv on Windows keeps its programs in `Scripts`.
+                ".hermes/hermes-agent/venv/Scripts",
+                ".hermes/hermes-agent/.venv/Scripts",
             ],
             _ => &[],
         }

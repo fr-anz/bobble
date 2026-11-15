@@ -7,11 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-15
+
 ### Added
 
 - **Luau panels.** Save a `.luau` file in the app's `panels` folder and it becomes a right-panel tab. A panel renders native components from a read-only snapshot of the project, including its sessions, Git changes and board. It can place the Explorer, Changes and History views, and can ask the app to open files or sessions, send messages, start chats, copy text, switch tabs or show a notice. A project can ship panels in `.placeholder/panels`, but they can start agent work only after you trust the project. Files reload when you save them.
 - **Luau hooks.** Files in the app's `hooks` folder can answer permission requests (allow, allow for the session, deny, or ask) and observe turns starting and finishing. When hooks disagree, a deny wins.
+- A panel with `placement = "composer"` is drawn below the composer of a new, empty session instead of as a right-panel tab.
 - `placeholder panel check`, `panel hook` and `panel paths` check panels and hooks outside the app and print where they live. See [docs/native/panels.md](docs/native/panels.md).
+
+### Changed
+
+- Luau panels read the app snapshot and run their timed `refresh` only while they are on screen, and a panel without `refresh` no longer keeps a timer.
+- On Windows, the app's warnings are written to `%LOCALAPPDATA%\Placeholder\Logs\gpui.log`. Before, Windows had no log file.
+
+### Fixed
+
+- With two projects open, panels below the composer made the window redraw continuously, which kept CPU and GPU busy. Each project now keeps its own composer panels.
+- A Hermes Agent turn that ends without a reply now shows an error with the reason Hermes gave, instead of stopping silently.
+- On Windows, Hermes Agent is also found in its virtual environment's `Scripts` folder.
 
 ## [0.1.0] - 2026-11-13
 

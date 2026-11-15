@@ -38,7 +38,7 @@ pub(crate) struct VisualView {
     document: VisualDocument,
     runtime: Option<Program>,
     /// Set for a Luau panel: the snapshot it renders from.
-    panel: Option<Value>,
+    panel: Option<std::sync::Arc<Value>>,
     /// Native views a panel may place.
     slots: HashMap<SlotName, gpui::AnyView>,
     tree: Option<Node>,
@@ -194,7 +194,7 @@ impl VisualView {
     /// labels its errors.
     pub(crate) fn new_panel(
         document: VisualDocument,
-        app: Value,
+        app: std::sync::Arc<Value>,
         slots: HashMap<SlotName, gpui::AnyView>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -280,8 +280,13 @@ impl VisualView {
         }
     }
     /// Gives a panel a new snapshot; it renders again only when it changed.
-    pub(crate) fn set_app(&mut self, app: &Value, cx: &mut Context<Self>) {
-        if self.panel.as_ref() == Some(app) {
+    pub(crate) fn set_app(&mut self, app: &std::sync::Arc<Value>, cx: &mut Context<Self>) {
+        // The shell hands out one allocation per distinct snapshot.
+        if self
+            .panel
+            .as_ref()
+            .is_some_and(|a| std::sync::Arc::ptr_eq(a, app))
+        {
             return;
         }
         self.panel = Some(app.clone());

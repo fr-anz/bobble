@@ -19,6 +19,8 @@ pub(super) struct State {
     _problems: Option<Subscription>,
     _composer: Option<Subscription>,
     snapshot_at: Option<std::time::Instant>,
+    /// The last snapshot handed out, shared with every panel that reads it.
+    snapshot: Option<std::sync::Arc<Value>>,
     retry: Option<gpui::Task<()>>,
 }
 
@@ -46,7 +48,10 @@ impl Shell {
                 &host,
                 window,
                 |this, _, event: &crate::composer_panels::ComposerPanelActions, window, cx| {
-                    this.panel_actions(event.0, event.1.clone(), window, cx)
+                    // Every shell hears the shared host; act only on this project's.
+                    if event.2 == monocode_core::files::path_key(&this.workspace.project) {
+                        this.panel_actions(event.0, event.1.clone(), window, cx)
+                    }
                 },
             )
         });
@@ -239,19 +244,23 @@ impl Shell {
         cx.notify();
     }
 
-    /// Rebuilds the snapshot while a panel is on screen and hands it over
-    /// when it changed.
+    /// Keeps on-screen panels' snapshot fresh. Called on every shell render,
+    /// so the common paths (no panel on screen, or a rebuild done recently)
+    /// must stay cheap.
     pub(super) fn sync_panel_snapshot(&mut self, cx: &mut Context<Self>) {
-        let composer = crate::composer_panels::get(cx);
-        if let Some(composer) = &composer {
-            let project = self.workspace.project.clone();
-            composer.update(cx, |c, cx| c.set_project(&project, cx));
+        let project = self.workspace.project.clone();
+        if let Some(host) = crate::composer_panels::get(cx)
+            && !host.read(cx).has_project(&project)
+        {
+            host.update(cx, |c, cx| c.add_project(&project, cx));
         }
-        let panel = self
-            .right_panel
-            .clone()
-            .filter(|p| p.read(cx).showing_script());
-        let composer = composer.filter(|c| c.read(cx).wanted());
+        let (panel, composer) = self.snapshot_readers(cx);
+        // Panels that render on a timer only do so while on screen.
+        if let Some(host) = crate::composer_panels::get(cx)
+            && host.read(cx).shown(&project) != composer.is_some()
+        {
+            host.update(cx, |c, cx| c.set_shown(&project, composer.is_some(), cx));
+        }
         if panel.is_none() && composer.is_none() {
             return;
         }
@@ -259,25 +268,97 @@ impl Shell {
         if let Some(at) = self.luau.snapshot_at
             && now < at + SNAPSHOT_EVERY
         {
-            if self.luau.retry.is_none() {
-                let wait = at + SNAPSHOT_EVERY - now;
-                self.luau.retry = Some(cx.spawn(async move |this, cx| {
-                    cx.background_executor().timer(wait).await;
-                    let _ = this.update(cx, |this, cx| {
-                        this.luau.retry = None;
-                        cx.notify();
-                    });
-                }));
+            // A reader that has no snapshot yet cannot draw; do not make it wait.
+            let waiting = panel.as_ref().is_some_and(|p| !p.read(cx).has_app())
+                || composer
+                    .as_ref()
+                    .is_some_and(|c| !c.read(cx).has_app(&project));
+            if !waiting {
+                if self.luau.retry.is_none() {
+                    let wait = at + SNAPSHOT_EVERY - now;
+                    // The retry refreshes the panels itself. Redrawing the
+                    // shell to get here again would cost a whole frame even
+                    // when nothing changed.
+                    self.luau.retry = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(wait).await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.luau.retry = None;
+                            this.push_panel_snapshot(cx);
+                        });
+                    }));
+                }
+                return;
             }
+        }
+        self.push_panel_snapshot(cx);
+    }
+
+    /// The right panel and the composer host, each only while it has a Luau
+    /// panel on screen to read the snapshot.
+    fn snapshot_readers(
+        &self,
+        cx: &App,
+    ) -> (
+        Option<Entity<crate::right_panel::RightPanel>>,
+        Option<Entity<crate::composer_panels::ComposerPanels>>,
+    ) {
+        let panel = self
+            .right_panel
+            .clone()
+            .filter(|p| p.read(cx).showing_script());
+        let composer = crate::composer_panels::get(cx)
+            .filter(|c| {
+                c.read(cx).wanted(&self.workspace.project) && self.empty_session_on_screen(cx)
+            });
+        (panel, composer)
+    }
+
+    /// Whether a new, empty session is on screen: composer panels draw only
+    /// below its composer.
+    fn empty_session_on_screen(&self, cx: &App) -> bool {
+        if self.app_view_open() || self.settings.is_some() || self.search_page() {
+            return false;
+        }
+        let Some(tab) = self.workspace.active_tab() else {
+            return false;
+        };
+        self.workspace.layout(tab).leaf_ids().into_iter().any(|id| {
+            match self.sessions.get(&id) {
+                Some(view) => view.read(cx).shows_composer_panels(),
+                None => self
+                    .session_summaries
+                    .get(&id)
+                    .is_some_and(|s| !s.has_messages),
+            }
+        })
+    }
+
+    /// Builds the snapshot and hands it to the panels on screen. An unchanged
+    /// snapshot keeps its allocation, so each reader skips it by pointer.
+    fn push_panel_snapshot(&mut self, cx: &mut Context<Self>) {
+        let (panel, composer) = self.snapshot_readers(cx);
+        if panel.is_none() && composer.is_none() {
             return;
         }
-        self.luau.snapshot_at = Some(now);
-        // Each receiver skips a snapshot it already has.
-        let snapshot = self.panel_snapshot(cx);
-        if let Some(composer) = composer {
-            composer.update(cx, |c, cx| c.set_app(&snapshot, cx));
+        self.luau.snapshot_at = Some(std::time::Instant::now());
+        let built = self.panel_snapshot(cx);
+        let snapshot = match &self.luau.snapshot {
+            Some(last) if **last == built => last.clone(),
+            _ => {
+                let fresh = std::sync::Arc::new(built);
+                self.luau.snapshot = Some(fresh.clone());
+                fresh
+            }
+        };
+        let project = self.workspace.project.clone();
+        if let Some(composer) = composer
+            && !composer.read(cx).has(&project, &snapshot)
+        {
+            composer.update(cx, |c, cx| c.set_app(&project, snapshot.clone(), cx));
         }
-        if let Some(panel) = panel {
+        if let Some(panel) = panel
+            && !panel.read(cx).has(&snapshot)
+        {
             panel.update(cx, |p, cx| p.set_app(snapshot, cx));
         }
     }

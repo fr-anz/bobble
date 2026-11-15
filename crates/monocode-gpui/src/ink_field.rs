@@ -11,6 +11,9 @@ use std::{cell::RefCell, f32::consts::PI, rc::Rc, time::Instant};
 
 /// Side of a smoke cell; the dither samples the field every 3px.
 const FIELD: f32 = 6.;
+/// Below this a field tone never inks: `tone * 0.55` stays under the
+/// faintest Bayer step, 0.5 / 16.
+const QUIET_TONE: f32 = 0.056;
 /// Seconds of holding that fully charge a burst.
 const CHARGE: f32 = 1.2;
 
@@ -217,6 +220,56 @@ impl Sim {
         }
     }
 
+    /// Visits the cells whose centres lie between `inner` and `outer` of
+    /// (x, y), with their offset, scanning only each row's two spans.
+    fn annulus(
+        &mut self,
+        x: f32,
+        y: f32,
+        inner: f32,
+        outer: f32,
+        mut visit: impl FnMut(&mut Self, usize, f32, f32),
+    ) {
+        if self.cols == 0 || outer <= 0. {
+            return;
+        }
+        let last_col = self.cols - 1;
+        let r0 = ((y - outer) / FIELD - 0.5).floor().max(0.) as usize;
+        let r1 = (((y + outer) / FIELD - 0.5).ceil().max(0.) as usize).min(self.rows - 1);
+        for row in r0..=r1 {
+            let dy = (row as f32 + 0.5) * FIELD - y;
+            if dy.abs() >= outer {
+                continue;
+            }
+            let far = (outer * outer - dy * dy).sqrt();
+            let near = if inner > dy.abs() {
+                (inner * inner - dy * dy).sqrt()
+            } else {
+                0.
+            };
+            let col_of = |px: f32| ((px / FIELD - 0.5).max(0.) as usize).min(last_col);
+            // Left span, then right span.
+            // Close spans merge, so padding never visits a cell twice.
+            let spans = if near > FIELD * 2. {
+                [(x - far, x - near), (x + near, x + far)]
+            } else {
+                [(x - far, x + far), (1., 0.)]
+            };
+            for (a, b) in spans {
+                if a > b {
+                    continue;
+                }
+                for col in col_of(a - FIELD)..=col_of(b + FIELD) {
+                    let dx = (col as f32 + 0.5) * FIELD - x;
+                    let d = dx.hypot(dy);
+                    if d >= inner && d < outer {
+                        visit(self, row * self.cols + col, dx, dy);
+                    }
+                }
+            }
+        }
+    }
+
     fn step(&mut self) {
         let now = Instant::now();
         let dt = self
@@ -269,11 +322,14 @@ impl Sim {
                 continue;
             };
             let band = ripple.band();
-            self.around(
+            // With `amp` at most 1, `g` passes 0.02 only within 1.98 bands
+            // of the front, so only that annulus is visited.
+            self.annulus(
                 ripple.x,
                 ripple.y,
-                radius + band * 2.5,
-                |sim, i, dx, dy, _| {
+                radius - band * 2.,
+                radius + band * 2.,
+                |sim, i, dx, dy| {
                     let d = dx.hypot(dy).max(1.);
                     let g = (-((d - radius) / band).powi(2)).exp() * amp;
                     if g > 0.02 {
@@ -295,16 +351,25 @@ impl Sim {
             .collect();
 
         // A slow curl keeps resting smoke wandering.
+        // sin(p + q) = sin p cos q + cos p sin q splits the diagonal wave, so
+        // every term but the final angle is per row or per column.
         let t = self.time;
+        let column: Vec<(f32, f32, f32)> = (0..self.cols)
+            .map(|col| {
+                let x = col as f32 * FIELD;
+                let (s, c) = (x * 0.013 + t * 0.21).sin_cos();
+                ((x * 0.021 + t * 0.37).sin(), s, c)
+            })
+            .collect();
         for row in 0..self.rows {
+            let y = row as f32 * FIELD;
+            let wave = (y * 0.027 - t * 0.29).cos();
+            let (s, c) = (y * 0.013).sin_cos();
             for col in 0..self.cols {
                 let i = row * self.cols + col;
                 if self.ink[i] > 0.01 {
-                    let (x, y) = (col as f32 * FIELD, row as f32 * FIELD);
-                    let a = ((x * 0.021 + t * 0.37).sin()
-                        + (y * 0.027 - t * 0.29).cos()
-                        + ((x + y) * 0.013 + t * 0.21).sin())
-                        * 1.4;
+                    let (across, ds, dc) = column[col];
+                    let a = (across + wave + ds * c + dc * s) * 1.4;
                     self.vx[i] += a.cos() * 45. * dt;
                     self.vy[i] += a.sin() * 45. * dt;
                 }
@@ -361,22 +426,8 @@ impl Sim {
         let [slate, peach, pink] = SPINNER_ROWS;
         let ink = [tint(slate, 0.14), tint(peach, 0.18), tint(pink, 0.24)];
         let lit_ink = [tint(slate, 0.18), tint(peach, 0.24), tint(pink, 0.3)];
-        let level = |tone: f32| (tone * 3.).clamp(0., 2.) as usize;
-
-        let rings: Vec<_> = self
-            .ripples
-            .iter()
-            .filter_map(|r| {
-                r.front()
-                    .map(|(radius, amp)| (r.x, r.y, radius, r.band(), amp))
-            })
-            .collect();
-        let orb = self.press.as_ref().map(|p| {
-            let charge = p.charge();
-            let breath = (self.time * 9.).sin() * 1.5;
-            (p.x, p.y, 4. + 14. * charge + breath, 0.4 + 0.5 * charge)
-        });
-        if let Some((x, y, radius, amp)) = orb {
+        let mut shade = self.shade();
+        if let Some((x, y, radius, amp)) = shade.orb {
             let r = px(radius * 1.4);
             dither::glow(
                 window,
@@ -388,34 +439,129 @@ impl Sim {
                 0.08 * amp,
             );
         }
+        dither::Grid::new(self.origin, self.width, self.height).paint(window, |col, row| {
+            shade
+                .cell(col, row)
+                .map(|(lit, level)| if lit { lit_ink[level] } else { ink[level] })
+        });
+    }
 
+    /// The frame's inputs for shading the dither cells.
+    fn shade(&self) -> Shade<'_> {
         let (cols, rows) = (self.cols, self.rows);
         let field = &self.ink;
-        dither::Grid::new(self.origin, self.width, self.height).paint(window, |col, row| {
-            let (x, y) = dither::Grid::center(col, row);
-            let tone = sample(field, cols, rows, x / FIELD - 0.5, y / FIELD - 0.5);
-            let mut lit = 0f32;
-            for &(rx, ry, radius, band, amp) in &rings {
-                let off = (x - rx).hypot(y - ry) - radius;
-                if off.abs() < band * 2.5 {
-                    lit = lit.max((-(off / band).powi(2)).exp() * amp);
+        // Interpolation never exceeds its corners, so a field cell whose 2x2
+        // block stays below the faintest dither step can skip sampling.
+        let hot = (0..rows * cols)
+            .map(|i| {
+                let (c, r) = (i % cols, i / cols);
+                let (c1, r1) = ((c + 1).min(cols - 1), (r + 1).min(rows - 1));
+                field[i]
+                    .max(field[r * cols + c1])
+                    .max(field[r1 * cols + c])
+                    .max(field[r1 * cols + c1])
+                    >= QUIET_TONE
+            })
+            .collect();
+        Shade {
+            field,
+            cols,
+            rows,
+            hot,
+            rings: self
+                .ripples
+                .iter()
+                .filter_map(|r| {
+                    r.front()
+                        .map(|(radius, amp)| (r.x, r.y, radius, r.band(), amp))
+                })
+                .collect(),
+            orb: self.press.as_ref().map(|p| {
+                let charge = p.charge();
+                let breath = (self.time * 9.).sin() * 1.5;
+                (p.x, p.y, 4. + 14. * charge + breath, 0.4 + 0.5 * charge)
+            }),
+            row_rings: Vec::new(),
+            ring_row: -1,
+        }
+    }
+}
+
+/// Shades the dither cells of one frame, row by row.
+struct Shade<'a> {
+    field: &'a [f32],
+    cols: usize,
+    rows: usize,
+    /// Field cells whose ink can show.
+    hot: Vec<bool>,
+    /// (x, y, radius, band, amplitude) of each ripple's ring.
+    rings: Vec<(f32, f32, f32, f32, f32)>,
+    /// (x, y, radius, amplitude) of a held press.
+    orb: Option<(f32, f32, f32, f32)>,
+    /// The rings that cross `ring_row`, with the horizontal offsets between
+    /// which their band can light a cell.
+    row_rings: Vec<(f32, f32, f32, f32, f32, f32, f32)>,
+    ring_row: i32,
+}
+impl Shade<'_> {
+    /// Whether the cell is inked, as (lit by a ring or the orb, tone level).
+    fn cell(&mut self, col: i32, row: i32) -> Option<(bool, usize)> {
+        let (x, y) = dither::Grid::center(col, row);
+        if row != self.ring_row {
+            self.ring_row = row;
+            self.row_rings.clear();
+            for &(rx, ry, radius, band, amp) in &self.rings {
+                let reach = band * 2.5;
+                let (dy, outer, inner) = ((y - ry).abs(), radius + reach, radius - reach);
+                if dy >= outer {
+                    continue;
                 }
+                let near = if inner > dy {
+                    (inner * inner - dy * dy).sqrt() - 1.
+                } else {
+                    0.
+                };
+                let far = (outer * outer - dy * dy).sqrt() + 1.;
+                self.row_rings.push((rx, ry, radius, band, amp, near, far));
             }
-            if let Some((ox, oy, radius, amp)) = orb {
-                let d = (x - ox).hypot(y - oy);
-                if d < radius {
-                    lit = lit.max((1. - d / radius).sqrt() * amp);
-                }
+        }
+        let (cols, rows) = (self.cols, self.rows);
+        let (fx, fy) = (x / FIELD - 0.5, y / FIELD - 0.5);
+        let (c, r) = (
+            fx.clamp(0., cols as f32 - 1.001) as usize,
+            fy.clamp(0., rows as f32 - 1.001) as usize,
+        );
+        let tone = if self.hot[r * cols + c] {
+            sample(self.field, cols, rows, fx, fy)
+        } else {
+            0.
+        };
+        let mut lit = 0f32;
+        for &(rx, ry, radius, band, amp, near, far) in &self.row_rings {
+            let dx = (x - rx).abs();
+            if dx < near || dx > far {
+                continue;
             }
-            // Coverage stays sparse, so the halftone never fills in solid.
-            if lit > tone && dither::inked(col, row, lit * 0.5) {
-                Some(lit_ink[level(lit)])
-            } else if dither::inked(col, row, tone * 0.55) {
-                Some(ink[level(tone)])
-            } else {
-                None
+            let off = dx.hypot(y - ry) - radius;
+            if off.abs() < band * 2.5 {
+                lit = lit.max((-(off / band).powi(2)).exp() * amp);
             }
-        });
+        }
+        if let Some((ox, oy, radius, amp)) = self.orb {
+            let d = (x - ox).hypot(y - oy);
+            if d < radius {
+                lit = lit.max((1. - d / radius).sqrt() * amp);
+            }
+        }
+        let level = |tone: f32| (tone * 3.).clamp(0., 2.) as usize;
+        // Coverage stays sparse, so the halftone never fills in solid.
+        if lit > tone && dither::inked(col, row, lit * 0.5) {
+            Some((true, level(lit)))
+        } else if dither::inked(col, row, tone * 0.55) {
+            Some((false, level(tone)))
+        } else {
+            None
+        }
     }
 }
 
@@ -497,6 +643,141 @@ impl Render for InkField {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shading before row culling, for checking it changes nothing.
+    fn reference(sim: &Sim, col: i32, row: i32) -> Option<(bool, usize)> {
+        let (x, y) = dither::Grid::center(col, row);
+        let tone = sample(
+            &sim.ink,
+            sim.cols,
+            sim.rows,
+            x / FIELD - 0.5,
+            y / FIELD - 0.5,
+        );
+        let mut lit = 0f32;
+        for r in &sim.ripples {
+            let Some((radius, amp)) = r.front() else {
+                continue;
+            };
+            let band = r.band();
+            let off = (x - r.x).hypot(y - r.y) - radius;
+            if off.abs() < band * 2.5 {
+                lit = lit.max((-(off / band).powi(2)).exp() * amp);
+            }
+        }
+        let level = |tone: f32| (tone * 3.).clamp(0., 2.) as usize;
+        if lit > tone && dither::inked(col, row, lit * 0.5) {
+            Some((true, level(lit)))
+        } else if dither::inked(col, row, tone * 0.55) {
+            Some((false, level(tone)))
+        } else {
+            None
+        }
+    }
+
+    /// Rapid clicks with the pointer moving: three seconds at 30 fps on a
+    /// 920x732 pane. Run with `--ignored --nocapture` in release to time it.
+    thread_local! {
+        static STEP: std::cell::Cell<std::time::Duration> = const { std::cell::Cell::new(std::time::Duration::ZERO) };
+    }
+    fn storm(mut frame: impl FnMut(&Sim)) {
+        let mut sim = Sim::default();
+        sim.resize(Bounds::new(point(px(0.), px(0.)), size(px(920.), px(732.))));
+        for n in 0..90u32 {
+            let (x, y) = ((n as f32 * 37.) % 920., (n as f32 * 53.) % 732.);
+            if n % 5 == 0 {
+                sim.ripples.push(Ripple {
+                    x,
+                    y,
+                    age: 0.,
+                    strength: 0.6,
+                });
+            }
+            sim.splats.push(Splat {
+                x,
+                y,
+                vx: 400.,
+                vy: -300.,
+            });
+            sim.last = Some(Instant::now() - std::time::Duration::from_millis(33));
+            let t = Instant::now();
+            sim.step();
+            STEP.with(|s| s.set(s.get() + t.elapsed()));
+            frame(&sim);
+        }
+    }
+
+    #[test]
+    fn annulus_visits_each_disk_cell_in_the_band_once() {
+        let mut sim = Sim::default();
+        sim.resize(Bounds::new(point(px(0.), px(0.)), size(px(920.), px(732.))));
+        for (x, y, inner, outer) in [
+            (460., 366., 100., 140.),
+            (10., 20., 0., 60.),
+            (900., 700., 5., 30.),
+            (300., 300., -20., 15.),
+            (455., 360., 7.5, 9.),
+            (0., 0., 250., 320.),
+        ] {
+            let mut expected = Vec::new();
+            sim.around(x, y, outer, |sim, i, dx, dy, _| {
+                if dx.hypot(dy) >= inner {
+                    expected.push(i);
+                }
+                let _ = sim;
+            });
+            let mut got = Vec::new();
+            sim.annulus(x, y, inner, outer, |_, i, _, _| got.push(i));
+            got.sort();
+            expected.sort();
+            assert_eq!(got, expected, "annulus {x},{y} {inner}..{outer}");
+        }
+    }
+
+    #[test]
+    fn culled_shading_matches_the_reference() {
+        storm(|sim| {
+            let mut shade = sim.shade();
+            for row in 0..244 {
+                for col in 0..306 {
+                    assert_eq!(
+                        shade.cell(col, row),
+                        reference(sim, col, row),
+                        "cell {col},{row}"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn shading_cost() {
+        let (mut culled, mut naive) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+        storm(|sim| {
+            let t = Instant::now();
+            let mut shade = sim.shade();
+            for row in 0..244 {
+                for col in 0..306 {
+                    std::hint::black_box(shade.cell(col, row));
+                }
+            }
+            culled += t.elapsed();
+            let t = Instant::now();
+            for row in 0..244 {
+                for col in 0..306 {
+                    std::hint::black_box(reference(sim, col, row));
+                }
+            }
+            naive += t.elapsed();
+        });
+        eprintln!(
+            "per frame: step {:?}, shading {:?} (reference {:?})",
+            STEP.with(|s| s.get()) / 90,
+            culled / 90,
+            naive / 90
+        );
+    }
 
     #[gpui::test]
     fn first_paint_starts_the_clock_and_a_quiet_field_releases_it(cx: &mut gpui::TestAppContext) {

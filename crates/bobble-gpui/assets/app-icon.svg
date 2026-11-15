@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- App icon: a round face with one plain eye and one spark eye, on the app's window colour. -->
+  <g transform="translate(100 100) scale(20.6)">
+    <rect width="40" height="40" rx="9" fill="#171717"/>
+    <path fill="#e7e6e2" fill-rule="evenodd" d="M6.252 26A15 15 0 1 1 33.748 26ZM11.3 19.5a2.2 2.6 0 1 0 4.4 0a2.2 2.6 0 1 0-4.4 0ZM25 7.5Q25 12 29.5 12Q25 12 25 16.5Q25 12 20.5 12Q25 12 25 7.5Z"/>
+    <path fill="#e7e6e2" opacity=".4" d="M7.01 27.5A15 15 0 0 0 32.99 27.5Z"/>
+  </g>
+</svg>

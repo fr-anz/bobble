@@ -1,1 +1,1 @@
-The dinosaur outline and two poses are copied from `crates/monocode-gpui/src/minions/sprites.json`. The site renders the same pixel grid as SVG; the native renderer is `crates/monocode-gpui/src/minions/avatar.rs`.
+The dinosaur outline and two poses are copied from `crates/bobble-gpui/src/minions/sprites.json`. The site renders the same pixel grid as SVG; the native renderer is `crates/bobble-gpui/src/minions/avatar.rs`.

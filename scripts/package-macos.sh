@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package a macOS release build as Placeholder.app inside a .dmg:
+# Package a macOS release build as Bobble.app inside a .dmg:
 #   scripts/package-macos.sh VERSION BINARY [OUT_DIR]
 # BINARY may be a universal binary (CI joins arm64 and x86_64 with lipo).
 # The app is signed ad hoc, not with a Developer ID, and is not notarized:
@@ -10,21 +10,21 @@ VERSION="${1:?usage: package-macos.sh VERSION BINARY [OUT_DIR]}"
 BINARY="${2:?usage: package-macos.sh VERSION BINARY [OUT_DIR]}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${3:-$ROOT/dist}"
-APP_ID="io.github.fr_anz.placeholder"
+APP_ID="io.github.fr_anz.bobble"
 
 [[ -x "$BINARY" ]] || { echo "No executable at $BINARY" >&2; exit 1; }
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-app="$work/Placeholder.app"
+app="$work/Bobble.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-# The app runs this binary directly; see bundle_uses_monocode_data in main.rs.
-install -m755 "$BINARY" "$app/Contents/MacOS/Placeholder"
+# The app runs this binary directly; see bundle_uses_bobble_data in main.rs.
+install -m755 "$BINARY" "$app/Contents/MacOS/Bobble"
 
 # AppIcon.icns from the 1024px PNG.
 iconset="$work/AppIcon.iconset"
 mkdir -p "$iconset"
-src="$ROOT/crates/monocode-gpui/assets/app-icon.png"
+src="$ROOT/crates/bobble-gpui/assets/app-icon.png"
 for size in 16 32 128 256 512; do
   sips -z "$size" "$size" "$src" --out "$iconset/icon_${size}x${size}.png" >/dev/null
   double=$((size * 2))
@@ -40,9 +40,9 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>Placeholder</string>
+  <string>Bobble</string>
   <key>CFBundleExecutable</key>
-  <string>Placeholder</string>
+  <string>Bobble</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
@@ -50,7 +50,7 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Placeholder</string>
+  <string>Bobble</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -77,7 +77,7 @@ mkdir -p "$stage"
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
 mkdir -p "$OUT_DIR"
-out="$OUT_DIR/Placeholder-$VERSION-macos-universal.dmg"
+out="$OUT_DIR/Bobble-$VERSION-macos-universal.dmg"
 rm -f "$out"
-hdiutil create -volname "Placeholder $VERSION" -srcfolder "$stage" -ov -format UDZO "$out" >&2
+hdiutil create -volname "Bobble $VERSION" -srcfolder "$stage" -ov -format UDZO "$out" >&2
 echo "$out"

@@ -1,6 +1,6 @@
 # Luau panels and hooks
 
-Placeholder can be extended with small [Luau](https://luau.org) programs:
+Bobble can be extended with small [Luau](https://luau.org) programs:
 
 - **Panels** add tabs to the right panel. A panel describes what to show; the app draws it with the same native components as session visuals, in the app's own fonts and colors. A panel can also place the app's own Explorer, Changes and History views.
 - **Hooks** run when something happens in the app. An `approval` hook can answer an agent's permission request for you. Other hooks observe events, such as a turn finishing.
@@ -21,7 +21,7 @@ Every file reloads when you save it. There is nothing to build or install.
 placeholder panel paths
 ```
 
-(`placeholder` is the installed command. A source build runs it as `monocode-gpui`.)
+(`bobble` is the installed command. A source build runs it as `bobble-gpui`.)
 
 Each folder loads at most 32 files, in name order. A project's panels show only while that project is open. Hooks are user-only: a repository cannot install a hook.
 

@@ -9,10 +9,10 @@ set -euo pipefail
 
 VERSION="${1:?usage: package-appimage.sh VERSION [BINARY] [OUT_DIR]}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BINARY="${2:-$ROOT/crates/monocode-gpui/target/release/monocode-gpui}"
+BINARY="${2:-$ROOT/crates/bobble-gpui/target/release/bobble-gpui}"
 OUT_DIR="${3:-$ROOT/dist}"
-CACHE_DIR="${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/placeholder-packaging}"
-APP_ID="io.github.fr_anz.placeholder"
+CACHE_DIR="${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/bobble-packaging}"
+APP_ID="io.github.fr_anz.bobble"
 ARCH="$(uname -m)"
 
 [[ -x "$BINARY" ]] || { echo "No executable at $BINARY" >&2; exit 1; }
@@ -31,20 +31,20 @@ fi
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-app="$work/Placeholder.AppDir"
+app="$work/Bobble.AppDir"
 
-install -Dm755 "$BINARY" "$app/usr/bin/placeholder"
-install -Dm644 "$ROOT/crates/monocode-gpui/assets/app-icon.png" \
+install -Dm755 "$BINARY" "$app/usr/bin/bobble"
+install -Dm644 "$ROOT/crates/bobble-gpui/assets/app-icon.png" \
   "$app/usr/share/icons/hicolor/1024x1024/apps/$APP_ID.png"
-cp "$ROOT/crates/monocode-gpui/assets/app-icon.png" "$app/$APP_ID.png"
+cp "$ROOT/crates/bobble-gpui/assets/app-icon.png" "$app/$APP_ID.png"
 ln -s "$APP_ID.png" "$app/.DirIcon"
 
 cat > "$app/$APP_ID.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Placeholder
+Name=Bobble
 Comment=Native desktop app for coding agents
-Exec=placeholder %U
+Exec=bobble %U
 Icon=$APP_ID
 Terminal=false
 Categories=Development;IDE;
@@ -57,12 +57,12 @@ install -Dm644 "$app/$APP_ID.desktop" "$app/usr/share/applications/$APP_ID.deskt
 cat > "$app/AppRun" <<'EOF'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
-exec "$HERE/usr/bin/placeholder" "$@"
+exec "$HERE/usr/bin/bobble" "$@"
 EOF
 chmod +x "$app/AppRun"
 
 mkdir -p "$OUT_DIR"
-out="$OUT_DIR/Placeholder-$VERSION-$ARCH.AppImage"
+out="$OUT_DIR/Bobble-$VERSION-$ARCH.AppImage"
 # Extract-and-run works without FUSE, as on CI runners and in containers.
 APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$tool" --no-appstream "$app" "$out" >&2
 echo "$out"

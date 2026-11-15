@@ -8,6 +8,9 @@ use serde_json::{Value, json};
 /// Board cards are read from the database, so the snapshot rereads them at
 /// most this often.
 const BOARD_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+/// Animations redraw the shell every frame, so the snapshot is rebuilt at
+/// most this often; a skipped rebuild is retried when the wait ends.
+const SNAPSHOT_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[derive(Default)]
 pub(super) struct State {
@@ -15,6 +18,8 @@ pub(super) struct State {
     _hooks: Option<Subscription>,
     _problems: Option<Subscription>,
     _composer: Option<Subscription>,
+    snapshot_at: Option<std::time::Instant>,
+    retry: Option<gpui::Task<()>>,
 }
 
 impl Shell {
@@ -250,6 +255,23 @@ impl Shell {
         if panel.is_none() && composer.is_none() {
             return;
         }
+        let now = std::time::Instant::now();
+        if let Some(at) = self.luau.snapshot_at
+            && now < at + SNAPSHOT_EVERY
+        {
+            if self.luau.retry.is_none() {
+                let wait = at + SNAPSHOT_EVERY - now;
+                self.luau.retry = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(wait).await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.luau.retry = None;
+                        cx.notify();
+                    });
+                }));
+            }
+            return;
+        }
+        self.luau.snapshot_at = Some(now);
         // Each receiver skips a snapshot it already has.
         let snapshot = self.panel_snapshot(cx);
         if let Some(composer) = composer {

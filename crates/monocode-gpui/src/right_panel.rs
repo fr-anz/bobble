@@ -408,6 +408,7 @@ impl RightPanel {
             .read(cx)
             .panels_for(&self.project)
             .into_iter()
+            .filter(|d| d.placement == monocode_core::panel::Placement::Right)
             .cloned()
             .collect();
         let mut old = std::mem::take(&mut self.scripts);

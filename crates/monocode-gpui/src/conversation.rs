@@ -148,6 +148,8 @@ pub(crate) struct Conversation {
     _command_removal: Subscription,
     _draft_observation: Subscription,
     _input_focus: Option<[Subscription; 2]>,
+    /// Redraws the empty view when a composer panel changes.
+    _composer_panels: Option<Subscription>,
     draft_has_value: bool,
     folder_selected: bool,
     follow_ups: follow_up::FollowUps,
@@ -665,6 +667,7 @@ impl Conversation {
             _command_removal: command_removal,
             _draft_observation: draft_observation,
             _input_focus: None,
+            _composer_panels: None,
             draft_has_value: false,
             folder_selected: false,
             follow_ups: Default::default(),
@@ -3505,6 +3508,30 @@ impl Conversation {
         let this = cx.entity().downgrade();
         let narrow = self.narrow;
         let docked = narrow && self.beside_pane;
+        let host = crate::composer_panels::get(cx);
+        if self._composer_panels.is_none()
+            && let Some(host) = &host
+        {
+            self._composer_panels = Some(cx.observe(host, |_, _, cx| cx.notify()));
+        }
+        // Luau panels with `placement = "composer"`, below the composer.
+        let panels = host
+            .map(|h| h.read(cx).views())
+            .filter(|views| !views.is_empty() && !docked)
+            .map(|views| {
+                div()
+                    .id("empty-session-panels")
+                    .flex_shrink(1.)
+                    .min_h_0()
+                    .max_h(px(420.))
+                    .overflow_y_scroll()
+                    .mt_3()
+                    .px(px(10.))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .children(views)
+            });
         self.attachment_drop_target("empty-session", cx)
             .relative()
             .size_full()
@@ -3558,6 +3585,7 @@ impl Conversation {
                         )
                     })
                     .child(self.composer(window, cx))
+                    .children(panels)
                     .when(!docked, |d| {
                         d.child(div().flex_grow(1.).flex_shrink(1.).flex_basis(px(18.)))
                     }),

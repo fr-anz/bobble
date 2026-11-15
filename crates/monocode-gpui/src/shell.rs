@@ -884,6 +884,7 @@ impl Shell {
     ) -> Self {
         crate::accounts::install(store.clone(), cx);
         crate::panels::install(store.clone(), cx);
+        crate::composer_panels::install(cx);
         let remote_dir = locked(&store)
             .ok()
             .and_then(|store| store.data_dir().map(std::path::Path::to_path_buf))

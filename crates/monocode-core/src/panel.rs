@@ -40,6 +40,25 @@ pub struct PanelMeta {
     pub title: Option<String>,
     pub icon: Option<String>,
     pub refresh: Option<Duration>,
+    pub placement: Placement,
+}
+
+/// Where the app shows a panel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Placement {
+    /// A tab in the right panel.
+    #[default]
+    Right,
+    /// Below the composer of a new, empty session.
+    Composer,
+}
+impl Placement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Right => "right",
+            Self::Composer => "composer",
+        }
+    }
 }
 
 /// A change a panel asks the app to make. The app decides whether to run it.
@@ -210,7 +229,12 @@ impl PanelRuntime {
         let title: Option<String> = meta.get("title").map_err(|e| e.to_string())?;
         let icon: Option<String> = meta.get("icon").map_err(|e| e.to_string())?;
         let refresh: Option<f64> = meta.get("refresh").map_err(|e| e.to_string())?;
+        let placement: Option<String> = meta.get("placement").map_err(|e| e.to_string())?;
         let meta = PanelMeta {
+            placement: match placement.as_deref() {
+                Some("composer") => Placement::Composer,
+                _ => Placement::Right,
+            },
             title: title
                 .map(|t| t.trim().chars().take(48).collect::<String>())
                 .filter(|t| !t.is_empty()),
@@ -530,6 +554,7 @@ pub fn cli(args: &[String], data_dir: &Path) -> Result<Value, String> {
                 "title": meta.title,
                 "icon": meta.icon,
                 "refresh": meta.refresh.map(|d| d.as_secs_f64()),
+                "placement": meta.placement.as_str(),
                 "slots": tree.slots().iter().map(|s| s.id()).collect::<Vec<_>>(),
                 "controls": probes.len(),
             }))

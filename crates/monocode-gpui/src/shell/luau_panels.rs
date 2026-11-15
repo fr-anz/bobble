@@ -12,9 +12,9 @@ const BOARD_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 #[derive(Default)]
 pub(super) struct State {
     board: Option<(std::time::Instant, String, Vec<Value>)>,
-    last: Option<Value>,
     _hooks: Option<Subscription>,
     _problems: Option<Subscription>,
+    _composer: Option<Subscription>,
 }
 
 impl Shell {
@@ -36,6 +36,15 @@ impl Shell {
         self.luau._problems = Some(cx.subscribe(&registry, |this, _, problem: &Problem, cx| {
             this.panel_notice(&problem.source, problem.message.clone(), cx)
         }));
+        self.luau._composer = crate::composer_panels::get(cx).map(|host| {
+            cx.subscribe_in(
+                &host,
+                window,
+                |this, _, event: &crate::composer_panels::ComposerPanelActions, window, cx| {
+                    this.panel_actions(event.0, event.1.clone(), window, cx)
+                },
+            )
+        });
     }
 
     /// Tells hooks and panels about an app event.
@@ -228,18 +237,27 @@ impl Shell {
     /// Rebuilds the snapshot while a panel is on screen and hands it over
     /// when it changed.
     pub(super) fn sync_panel_snapshot(&mut self, cx: &mut Context<Self>) {
-        let Some(panel) = self.right_panel.clone() else {
-            return;
-        };
-        if !panel.read(cx).showing_script() {
+        let composer = crate::composer_panels::get(cx);
+        if let Some(composer) = &composer {
+            let project = self.workspace.project.clone();
+            composer.update(cx, |c, cx| c.set_project(&project, cx));
+        }
+        let panel = self
+            .right_panel
+            .clone()
+            .filter(|p| p.read(cx).showing_script());
+        let composer = composer.filter(|c| c.read(cx).wanted());
+        if panel.is_none() && composer.is_none() {
             return;
         }
+        // Each receiver skips a snapshot it already has.
         let snapshot = self.panel_snapshot(cx);
-        if self.luau.last.as_ref() == Some(&snapshot) {
-            return;
+        if let Some(composer) = composer {
+            composer.update(cx, |c, cx| c.set_app(&snapshot, cx));
         }
-        self.luau.last = Some(snapshot.clone());
-        panel.update(cx, |p, cx| p.set_app(snapshot, cx));
+        if let Some(panel) = panel {
+            panel.update(cx, |p, cx| p.set_app(snapshot, cx));
+        }
     }
 
     fn panel_snapshot(&mut self, cx: &mut Context<Self>) -> Value {

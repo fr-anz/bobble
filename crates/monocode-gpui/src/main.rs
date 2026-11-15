@@ -58,6 +58,7 @@ mod notifications;
 mod pane_layout;
 mod pane_motion;
 mod panels;
+mod composer_panels;
 mod particle_text;
 mod phase_tile;
 mod pickers;

@@ -56,6 +56,7 @@ A **Hello** tab appears in the right panel. `render` runs again after every cont
 | `title` | Tab label, up to 48 characters. |
 | `icon` | Tab icon name. |
 | `refresh` | Seconds between re-renders while the panel is visible; at least 1. |
+| `placement` | `"right"` (the default) for a right-panel tab, or `"composer"` to show the panel below a new session's composer. Composer panels cannot use slots. |
 | `on` | A table of event handlers, such as `on = { turn_finished = function(event, app) ... end }`. A handled event re-renders the panel. |
 
 ## The app snapshot

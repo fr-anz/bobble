@@ -333,8 +333,12 @@ return table.freeze({
 		check(value.icon == nil or type(value.icon) == "string", "Panel icon must be a string")
 		check(value.refresh == nil or type(value.refresh) == "number", "Panel refresh must be a number of seconds")
 		check(value.on == nil or type(value.on) == "table", "Panel `on` must be a table of event handlers")
+		check(
+			value.placement == nil or value.placement == "right" or value.placement == "composer",
+			"Panel placement must be \"right\" or \"composer\""
+		)
 		program = value
-		return { title = value.title, icon = value.icon, refresh = value.refresh }
+		return { title = value.title, icon = value.icon, refresh = value.refresh, placement = value.placement }
 	end,
 	render = render,
 	dispatch = function(id: string, value: any, app: any)

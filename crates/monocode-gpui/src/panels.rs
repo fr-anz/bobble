@@ -95,6 +95,7 @@ pub(crate) struct PanelDef {
     pub error: Option<String>,
     /// Bumped whenever the file's content changes.
     pub revision: u64,
+    pub placement: monocode_core::panel::Placement,
 }
 impl PanelDef {
     pub fn file_name(&self) -> String {
@@ -411,12 +412,12 @@ impl Registry {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let (title, icon, error) = match PanelRuntime::new(&name, &source) {
+            let (title, icon, placement, error) = match PanelRuntime::new(&name, &source) {
                 Ok(runtime) => {
                     let meta = runtime.meta();
-                    (meta.title.clone(), meta.icon.clone(), None)
+                    (meta.title.clone(), meta.icon.clone(), meta.placement, None)
                 }
-                Err(error) => (None, None, Some(error)),
+                Err(error) => (None, None, Default::default(), Some(error)),
             };
             defs.push(PanelDef {
                 id,
@@ -429,6 +430,7 @@ impl Registry {
                 source,
                 error,
                 revision,
+                placement,
             });
         }
         let mut problems: Vec<Problem> = defs

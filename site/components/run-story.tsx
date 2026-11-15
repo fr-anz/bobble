@@ -22,7 +22,7 @@ export function RunStory() {
 
         <Chapter tone="idle" status="Not started" title="Start with a task.">
           <p className="chapter-copy">
-            Describe the work. Placeholder turns it into a card and tracks it through review.
+            Describe the work. Bobble turns it into a card and tracks it through review.
           </p>
           <Shot
             src={board}

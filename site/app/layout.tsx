@@ -23,11 +23,11 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.CF_PAGES_URL;
 
 export const metadata: Metadata = {
   metadataBase: siteUrl ? new URL(siteUrl) : undefined,
-  title: "Placeholder: your agents, one workspace",
+  title: "Bobble: your agents, one workspace",
   description:
     "Run coding agents in parallel. Review their work in one native app.",
   openGraph: {
-    title: "Placeholder",
+    title: "Bobble",
     description: "Your agents. One workspace.",
     type: "website",
   },

@@ -10,7 +10,7 @@ The app renders visual components directly through GPUI. Programs describe conte
 
 ## Agent workflow
 
-Active sessions offer `visual_docs`, `visual_check`, and `visual_show` through the session's MCP server where the provider supports injected tools. Tool descriptions are short capability summaries. The full component API, styling rules, examples, and limits are returned by `visual_docs` when the agent prepares a visual. Claude Code receives brief usage guidance in its appended system prompt, and Codex receives it in its developer instructions, when the session's visual bridge is configured. Claude's session-scoped `monocode_visual` tools are allowed without an extra permission prompt, including in read-only and planning turns. No permanent provider configuration is changed.
+Active sessions offer `visual_docs`, `visual_check`, and `visual_show` through the session's MCP server where the provider supports injected tools. Tool descriptions are short capability summaries. The full component API, styling rules, examples, and limits are returned by `visual_docs` when the agent prepares a visual. Claude Code receives brief usage guidance in its appended system prompt, and Codex receives it in its developer instructions, when the session's visual bridge is configured. Claude's session-scoped `bobble_visual` tools are allowed without an extra permission prompt, including in read-only and planning turns. No permanent provider configuration is changed.
 
 1. Call `visual_docs` with `{}` to load the reference when creating a visual.
 2. Write a JavaScript function body that returns a synchronous render function.
@@ -25,12 +25,12 @@ The check executes the program and validates its native component tree and repre
 The equivalent commands work with a source file:
 
 ```sh
-monocode-gpui visual docs
-monocode-gpui visual check --input /path/to/explanation.js
-monocode-gpui visual show --input /path/to/explanation.js --title "Explanation"
+bobble-gpui visual docs
+bobble-gpui visual check --input /path/to/explanation.js
+bobble-gpui visual show --input /path/to/explanation.js --title "Explanation"
 ```
 
-Reading the reference and checking also work outside a running app. Showing requires the capability inherited by the agent of a live session. CLI discovery supplies the executable path; it is also available to the agent through `MONOCODE_VISUAL_EXECUTABLE`.
+Reading the reference and checking also work outside a running app. Showing requires the capability inherited by the agent of a live session. CLI discovery supplies the executable path; it is also available to the agent through `BOBBLE_VISUAL_EXECUTABLE`.
 
 ## Minion documents
 
@@ -113,7 +113,7 @@ The [dashboard example](examples/visual-dashboard.js) exercises charts, tabs, st
 To seed them into an isolated development conversation:
 
 ```sh
-cargo run --manifest-path crates/monocode-gpui/Cargo.toml --locked -p monocode-gpui --profile native-dev -- --dev-data --visual-fixture
+cargo run --manifest-path crates/bobble-gpui/Cargo.toml --locked -p bobble-gpui --profile native-dev -- --dev-data --visual-fixture
 ```
 
 The fixture cannot be written into the production database.

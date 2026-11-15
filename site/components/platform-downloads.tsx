@@ -15,7 +15,7 @@ export function PlatformDownloads() {
             <p>{arch}</p>
           </div>
           <p className="platform-install">{install}</p>
-          <a className="btn platform-button" href={href} aria-label={`Download Placeholder ${VERSION} for ${os}, ${kind}`}>
+          <a className="btn platform-button" href={href} aria-label={`Download Bobble ${VERSION} for ${os}, ${kind}`}>
             Download for {os}
             <DownloadIcon />
           </a>

@@ -1,5 +1,5 @@
 export const VERSION = "0.1.1";
-export const REPO = "https://github.com/fr-anz/placeholder";
+export const REPO = "https://github.com/fr-anz/bobble";
 export const RELEASES = `${REPO}/releases`;
 
 /** The agent CLIs the app can drive, in the order the page lists them. */
@@ -33,26 +33,29 @@ export const SPEC: { term: string; detail: string }[] = [
 ];
 
 // Asset names match .github/workflows/release.yml and scripts/package-*.sh.
+// The 0.1.1 assets were published under the app's old name. Set this to
+// "Bobble" when VERSION moves to the first release built after the rename.
+const ASSET = "Placeholder";
 export const BUILDS = [
   {
     os: "Linux",
     kind: "AppImage",
     arch: "Intel & AMD · 64-bit",
-    href: `${RELEASES}/download/v${VERSION}/Placeholder-${VERSION}-x86_64.AppImage`,
+    href: `${RELEASES}/download/v${VERSION}/${ASSET}-${VERSION}-x86_64.AppImage`,
     install: "Make executable, then open.",
   },
   {
     os: "Windows",
     kind: ".exe",
     arch: "Intel & AMD · 64-bit",
-    href: `${RELEASES}/download/v${VERSION}/Placeholder-${VERSION}-x86_64.exe`,
+    href: `${RELEASES}/download/v${VERSION}/${ASSET}-${VERSION}-x86_64.exe`,
     install: "Open the downloaded executable.",
   },
   {
     os: "macOS",
     kind: ".dmg",
     arch: "Apple silicon & Intel",
-    href: `${RELEASES}/download/v${VERSION}/Placeholder-${VERSION}-macos-universal.dmg`,
-    install: "Drag Placeholder into Applications.",
+    href: `${RELEASES}/download/v${VERSION}/${ASSET}-${VERSION}-macos-universal.dmg`,
+    install: "Drag Bobble into Applications.",
   },
 ] as const;

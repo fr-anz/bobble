@@ -1,24 +1,22 @@
 <div align="center">
 
-<img src="crates/monocode-gpui/assets/app-icon.png" alt="Placeholder logo" width="80" />
+<img src="crates/bobble-gpui/assets/app-icon.png" alt="Bobble logo" width="80" />
 
-# Placeholder
+# Bobble
 
 ### Your agents. One workspace.
 
 Run coding agents in parallel. Review their work in one native app.
 
-**Built on the [usemono.dev](https://usemono.dev) shell.**
+[Downloads](https://github.com/fr-anz/bobble/releases) · [Getting started](#getting-started) · [Development](#development) · [Credits](#credits)
 
-[Downloads](https://github.com/fr-anz/placeholder/releases) · [Getting started](#getting-started) · [Development](#development) · [Credits](#credits)
-
-<img src="site/assets/shots/hero.webp" alt="Placeholder showing an agent conversation alongside changed files" width="1120" />
+<img src="site/assets/shots/hero.webp" alt="Bobble showing an agent conversation alongside changed files" width="1120" />
 
 </div>
 
 ## From a task to a branch you can review
 
-Give Placeholder a task, approve the plan, and let agents work in separate Git
+Give Bobble a task, approve the plan, and let agents work in separate Git
 worktrees. Follow progress in one place, inspect the diffs, and commit when
 you're ready.
 
@@ -54,7 +52,7 @@ when you save. See [Luau panels and hooks](docs/native/panels.md).
 
 ## Bring your own agents
 
-Placeholder drives the agent CLIs you already have installed, using the accounts
+Bobble drives the agent CLIs you already have installed, using the accounts
 you're signed in to. It does not ship a model or include a model subscription.
 
 **Claude Code · Codex · Cursor · OpenCode · Grok Build · Devin · Antigravity · Pi · Hermes Agent · omp · fx**
@@ -64,13 +62,13 @@ Configure CLI paths and accounts in **Settings → Providers**.
 ## Getting started
 
 Install and sign in to at least one supported agent CLI, then choose a build from
-the [releases page](https://github.com/fr-anz/placeholder/releases).
+the [releases page](https://github.com/fr-anz/bobble/releases).
 
 | Platform | Package | Install |
 | --- | --- | --- |
 | Linux | x86_64 AppImage | Make the file executable, then open it. |
 | Windows | x86_64 executable | Open the downloaded `.exe`. |
-| macOS | Universal disk image | Open the `.dmg` and drag Placeholder into Applications. |
+| macOS | Universal disk image | Open the `.dmg` and drag Bobble into Applications. |
 
 Current builds are unsigned. Your operating system may ask you to allow the app
 on first launch.
@@ -81,25 +79,25 @@ You'll need Git, a current stable Rust toolchain, and the native development
 libraries listed in the [release workflow](.github/workflows/release.yml).
 
 ```sh
-git clone https://github.com/fr-anz/placeholder.git
+git clone https://github.com/fr-anz/bobble.git
 cd placeholder
 bash scripts/install-linux.sh
 ```
 
 The installer builds the app and adds a launcher for the current user. Run
-`placeholder` from your terminal, or open it from your application menu.
+`bobble` from your terminal, or open it from your application menu.
 
 ## Development
 
 The desktop app is built with **Rust and GPUI**. Its Cargo workspace lives in
-`crates/monocode-gpui`; no JavaScript frontend build is needed for the native app.
+`crates/bobble-gpui`; no JavaScript frontend build is needed for the native app.
 
 ```sh
 # Build the native app
-cargo build --locked --release --manifest-path crates/monocode-gpui/Cargo.toml -p monocode-gpui
+cargo build --locked --release --manifest-path crates/bobble-gpui/Cargo.toml -p bobble-gpui
 
 # Run the native app
-cargo run --locked --release --manifest-path crates/monocode-gpui/Cargo.toml -p monocode-gpui
+cargo run --locked --release --manifest-path crates/bobble-gpui/Cargo.toml -p bobble-gpui
 ```
 
 The separate [Next.js website](site/README.md) lives in `site/` and exports to
@@ -107,21 +105,20 @@ static files for Cloudflare Pages.
 
 | Path | Purpose |
 | --- | --- |
-| [`crates/monocode-gpui`](crates/monocode-gpui) | Native desktop interface, editor, terminal, and agent sessions. |
-| [`crates/monocode-core`](crates/monocode-core) | Shared application logic. |
+| [`crates/bobble-gpui`](crates/bobble-gpui) | Native desktop interface, editor, terminal, and agent sessions. |
+| [`crates/bobble-core`](crates/bobble-core) | Shared application logic. |
 | [`site`](site) | Landing page, download page, and website assets. |
 | [`scripts`](scripts) | Installation and release packaging. |
 | [`docs/native`](docs/native) | Inherited architecture, feature notes, and verification records. |
 
-Some inherited native documentation refers to upstream MonoCode's npm commands
-and data paths. Use the Cargo commands above for this checkout.
+Some inherited native documentation refers to npm commands and data paths
+from the project this app was forked from. Use the Cargo commands above for this checkout.
 
 ## Credits
 
-Placeholder is built on the **[usemono.dev](https://usemono.dev) shell**, forked
-from **MonoCode Native 0.16.0**. Credit to its creators for the foundation this
-project builds on, and to Zed Industries for GPUI.
+Bobble is a fork of MonoCode Native 0.16.0. Credit to its creators for the
+foundation this project builds on, and to Zed Industries for GPUI.
 
 Licensed under [MIT](LICENSE). Upstream copyright and third-party attributions
 are preserved in [NOTICE](NOTICE). Agent names and logos belong to their
-respective owners; Placeholder is not affiliated with those providers.
+respective owners; Bobble is not affiliated with those providers.

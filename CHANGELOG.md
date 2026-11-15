@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-15
+
+### Changed
+
+- The app is now called **Bobble** and has a new icon: a round face with one plain eye and one spark eye. The command is `bobble`, the application ID is `io.github.fr_anz.bobble`, and the data directory is `Bobble`. Data saved by earlier builds under the old name is not carried over.
+- The crates are now `bobble-core`, `bobble-gpui` and `bobble-mobile-link`, and the `MONOCODE_*` environment variables are now `BOBBLE_*`.
+- The macOS menu bar shows a single-colour version of the icon.
+
 ## [0.1.1] - 2026-11-15
 
 ### Added

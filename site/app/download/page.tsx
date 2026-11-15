@@ -3,8 +3,8 @@ import { PlatformDownloads } from "@/components/platform-downloads";
 import { SiteFooter } from "@/components/site-footer";
 
 export const metadata: Metadata = {
-  title: "Download Placeholder for Linux, Windows and macOS",
-  description: "Download Placeholder, a native desktop app for your coding agents. Available for Linux, Windows and macOS.",
+  title: "Download Bobble for Linux, Windows and macOS",
+  description: "Download Bobble, a native desktop app for your coding agents. Available for Linux, Windows and macOS.",
 };
 
 export default function DownloadPage() {
@@ -12,7 +12,7 @@ export default function DownloadPage() {
     <>
       <main className="download-page wrap" id="top">
         <div className="download-intro">
-          <h1>Download<br />Placeholder.</h1>
+          <h1>Download<br />Bobble.</h1>
         </div>
         <PlatformDownloads />
       </main>

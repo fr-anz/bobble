@@ -1,4 +1,4 @@
-# Placeholder website
+# Bobble website
 
 Next.js landing and download pages. The production build is a static export;
 it needs no Node.js server, Workers adapter, or Pages Functions.
@@ -16,7 +16,7 @@ npm run dev
 
 Commit and push the website configuration to GitHub. In Cloudflare's dashboard,
 open **Workers & Pages → Create application → Pages → Import an existing Git
-repository** and select `fr-anz/placeholder`.
+repository** and select `fr-anz/bobble`.
 
 Use these build settings (paths are relative to the selected root directory):
 

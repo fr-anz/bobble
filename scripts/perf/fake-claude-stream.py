@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A stand-in `claude` that streams a long scripted reply, for profiling.
 
-Point the app at it with MONOCODE_CLAUDE_BINARY (see scripts/perf/README.md).
+Point the app at it with BOBBLE_CLAUDE_BINARY (see scripts/perf/README.md).
 It speaks just enough of Claude Code's stream-json protocol for a turn: it
 answers the initialize request, and every user message gets one long Markdown
 reply streamed as text deltas at a steady, realistic pace, then a result. No

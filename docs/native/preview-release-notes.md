@@ -1,6 +1,6 @@
-# Monocode Native 0.16.0-preview.14
+# Bobble Native 0.16.0-preview.14
 
-This experimental Monocode Native preview is built with Rust + GPUI. React/Tauri remains the production app.
+This experimental Bobble Native preview is built with Rust + GPUI. React/Tauri remains the production app.
 
 ## Changes since preview 13
 
@@ -37,7 +37,7 @@ This experimental Monocode Native preview is built with Rust + GPUI. React/Tauri
 - Streaming reply updates share the animation clock's redraws while it is running. Sized CoreText fonts are cached, and per-frame notification checks avoid copying preferences, reducing repeated rendering work.
 - macOS windows keep retrying outstanding frame requests after a display-link stall, including when recovery was temporarily blocked by occlusion or a missing screen. Hidden windows remain stopped.
 - Screenshot-thumbnail drops no longer rely on a two-buffer Metal layer that could block the main thread waiting for a drawable. The renderer also tracks whether drawn frames reached the screen and attempts recovery when an active window's frames go unshown.
-- GPUI warnings and macOS repaint diagnostics are saved to **`~/Library/Logs/Monocode Native/gpui.log`**, including slow renderer waits and frame summaries after file drops. The log rotates and suppresses repeated messages.
+- GPUI warnings and macOS repaint diagnostics are saved to **`~/Library/Logs/Bobble Native/gpui.log`**, including slow renderer waits and frame summaries after file drops. The log rotates and suppresses repeated messages.
 
 ### Phone companion
 
@@ -47,7 +47,7 @@ This change requires a separately distributed phone companion update; installing
 
 ### Development and coverage
 
-- **`MONOCODE_FRAME_LOG`** provides opt-in frame counts, draw times, main-thread CPU on macOS, view reuse, redraw origins, transcript measurement time, and text-shaping counts. **`scripts/perf/frame-run.sh`** runs repeatable scripted streaming or scrolling captures with isolated development data and optional stack profiling. See the [performance guide](https://github.com/hardbeat920/monocode/blob/native-v0.16.0-preview.14/scripts/perf/README.md).
+- **`BOBBLE_FRAME_LOG`** provides opt-in frame counts, draw times, main-thread CPU on macOS, view reuse, redraw origins, transcript measurement time, and text-shaping counts. **`scripts/perf/frame-run.sh`** runs repeatable scripted streaming or scrolling captures with isolated development data and optional stack profiling. See the [performance guide](https://github.com/hardbeat920/monocode/blob/native-v0.16.0-preview.14/scripts/perf/README.md).
 - Regression coverage was added or updated for Claude replay and credential handling, graceful provider shutdown, sign-in cancellation, terminal placement/splitting/drag-out/close confirmation, new-session defaults, pinned tabs, composer focus and layout, sidebar navigation and peeking, frame-demand recovery, and offline phone composition. Process-escalation fixtures tolerate delayed group exit, and logger setup is included in test builds for strict Clippy.
 - The root README now separates Native and Tauri downloads and refreshes its screenshot and image links. The [complete change audit](https://github.com/hardbeat920/monocode/blob/native-v0.16.0-preview.14/docs/native/preview-14-change-audit.md) records every commit since preview 13, merged contributions, and the parallel React/Tauri Claude usage fixes.
 
@@ -55,13 +55,13 @@ Thanks to @keyCat and @Kaloyanes for their contributions since preview 13.
 
 ## Installation and testing
 
-Choose the download for your platform: macOS Apple Silicon or Intel, Windows x64, or Linux x64 (AppImage, Debian/Ubuntu `.deb`, or Fedora/Enterprise Linux `.rpm`). Install it alongside your existing Monocode application.
+Choose the download for your platform: macOS Apple Silicon or Intel, Windows x64, or Linux x64 (AppImage, Debian/Ubuntu `.deb`, or Fedora/Enterprise Linux `.rpm`). Install it alongside your existing Bobble application.
 
 **Testing status:** macOS is the primary tested platform. A Linux ARM64 source build was exercised in an Ubuntu VM with a graphics workaround, and a Windows 10 source build passed manual title-bar checks. The downloadable Linux x64 and Windows packages still need broader runtime testing. Native system notifications currently support macOS only. HTML panels and media support remain limited on Linux and Windows.
 
 Local automated checks, the native dependency audit, and the long-history CPU comparison are recorded in [verification](https://github.com/hardbeat920/monocode/blob/native-v0.16.0-preview.14/docs/native/verification.md).
 
-**Data:** this preview uses your existing Monocode database and saves changes there. Back up your Monocode data with the app closed before testing. Native preferences are stored separately. Avoid editing the same conversations in both apps at once.
+**Data:** this preview uses your existing Bobble database and saves changes there. Back up your Bobble data with the app closed before testing. Native preferences are stored separately. Avoid editing the same conversations in both apps at once.
 
 **Updates:** use Settings → General → About to check for updates and install the next native preview. Packaged upgrades still need runtime testing; if updating fails, download the new installer manually. Linux `.deb`/`.rpm` installs use the system authentication prompt (`pkexec`) to install the downloaded package. Cancelling authentication leaves the current version installed. Native previews receive native preview updates; production Tauri releases use their own feed.
 

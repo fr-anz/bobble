@@ -116,6 +116,10 @@ struct ScriptTab {
     element_id: &'static str,
     revision: u64,
     view: Option<(Entity<VisualView>, [Subscription; 2])>,
+    /// The panel's timed render, when it declares `refresh`.
+    refresh: Option<gpui::Task<()>>,
+    /// Missed a timed render while off screen; render when shown again.
+    stale: bool,
 }
 
 /// Interns a short dynamic label for APIs that keep `&'static str`. Panel
@@ -309,7 +313,7 @@ pub(crate) struct RightPanel {
     project: String,
     scripts: Vec<ScriptTab>,
     /// None until the shell first builds it; panels never render without it.
-    app: Option<serde_json::Value>,
+    app: Option<std::sync::Arc<serde_json::Value>>,
     _subscriptions: Vec<Subscription>,
 }
 impl EventEmitter<PanelEvent> for RightPanel {}
@@ -422,6 +426,8 @@ impl RightPanel {
                     element_id: intern(&format!("right-panel-tab-panel-{}", def.id.0)),
                     revision: def.revision,
                     view: None,
+                    refresh: None,
+                    stale: false,
                 },
             };
             tab.title = intern(&def.title);
@@ -430,6 +436,8 @@ impl RightPanel {
                 tab.revision = def.revision;
                 if let Some((view, _)) = &tab.view {
                     view.update(cx, |v, cx| v.reload(def.document(), cx));
+                    // The edit may have added, changed or dropped `refresh`.
+                    tab.refresh = self.refresh(tab.id, view, cx);
                 }
             }
             self.scripts.push(tab);
@@ -447,8 +455,21 @@ impl RightPanel {
         cx.notify();
     }
     /// Updates the snapshot open panels render from.
-    pub(crate) fn set_app(&mut self, app: serde_json::Value, cx: &mut Context<Self>) {
-        if self.app.as_ref() == Some(&app) {
+    pub(crate) fn has_app(&self) -> bool {
+        self.app.is_some()
+    }
+    /// Whether `app` is the snapshot the panels already render from.
+    pub(crate) fn has(&self, app: &std::sync::Arc<serde_json::Value>) -> bool {
+        self.app
+            .as_ref()
+            .is_some_and(|a| std::sync::Arc::ptr_eq(a, app))
+    }
+    pub(crate) fn set_app(
+        &mut self,
+        app: std::sync::Arc<serde_json::Value>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.has(&app) {
             return;
         }
         for script in &self.scripts {
@@ -527,27 +548,29 @@ impl RightPanel {
         ];
         // Actions from the first render were emitted before anyone listened.
         self.scripts[ix].view = Some((view.clone(), subscriptions));
-        self.start_refresh(id, &view, cx);
+        let refresh = self.refresh(id, &view, cx);
+        self.scripts[ix].refresh = refresh;
         Some(view)
     }
-    /// Renders a panel again on its declared interval while it exists. The
-    /// interval is read each tick, so a reloaded file can add, change or
-    /// drop it.
-    fn start_refresh(&mut self, id: PanelId, view: &Entity<VisualView>, cx: &mut Context<Self>) {
+    /// Renders a panel again on its declared interval, while it is on
+    /// screen. A panel without `refresh` gets no timer at all.
+    fn refresh(
+        &self,
+        id: PanelId,
+        view: &Entity<VisualView>,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Task<()>> {
+        let interval = view.read(cx).refresh_interval()?;
         let weak = view.downgrade();
-        cx.spawn(async move |this, cx| {
+        Some(cx.spawn(async move |this, cx| {
             loop {
-                let Ok(interval) = weak.read_with(cx, |v, _| v.refresh_interval()) else {
-                    break;
-                };
-                cx.background_executor()
-                    .timer(interval.unwrap_or(std::time::Duration::from_secs(1)))
-                    .await;
-                if interval.is_none() {
-                    continue;
-                }
+                cx.background_executor().timer(interval).await;
                 let Ok(visible) = this.update(cx, |this, _| {
-                    this.showing_script() && this.tab == RightTab::Script(id)
+                    let visible = this.script_on_screen(id);
+                    if !visible && let Some(tab) = this.scripts.iter_mut().find(|t| t.id == id) {
+                        tab.stale = true;
+                    }
+                    visible
                 }) else {
                     break;
                 };
@@ -555,8 +578,25 @@ impl RightPanel {
                     break;
                 }
             }
-        })
-        .detach();
+        }))
+    }
+    fn script_on_screen(&self, id: PanelId) -> bool {
+        self.showing_script() && self.sidebar_tab.unwrap_or(self.tab) == RightTab::Script(id)
+    }
+    /// Runs the timed render a panel missed while it was off screen.
+    fn catch_up(&mut self, cx: &mut Context<Self>) {
+        let RightTab::Script(id) = self.sidebar_tab.unwrap_or(self.tab) else {
+            return;
+        };
+        if !self.script_on_screen(id) {
+            return;
+        }
+        if let Some(tab) = self.scripts.iter_mut().find(|t| t.id == id)
+            && std::mem::take(&mut tab.stale)
+            && let Some((view, _)) = &tab.view
+        {
+            view.clone().update(cx, |v, cx| v.rerender(cx));
+        }
     }
     pub(crate) fn tab(&self) -> RightTab {
         self.tab
@@ -668,6 +708,7 @@ impl RightPanel {
                 cx,
             )
         });
+        self.catch_up(cx);
     }
     pub(crate) fn focus_pane(&self, window: &mut Window, cx: &mut App) {
         let focus = match (self.shown, self.tab) {

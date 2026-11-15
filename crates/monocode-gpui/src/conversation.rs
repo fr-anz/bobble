@@ -264,6 +264,11 @@ impl Drop for Conversation {
     }
 }
 impl Conversation {
+    /// Whether this is a new, empty session, which draws the composer's
+    /// Luau panels.
+    pub(crate) fn shows_composer_panels(&self) -> bool {
+        !self.summary.has_messages && self.settings.minion.is_none()
+    }
     /// Lets Luau approval hooks answer permission requests. Requests no
     /// hook decides are returned for the user, and panels hear about them.
     fn hook_approvals(
@@ -3516,7 +3521,7 @@ impl Conversation {
         }
         // Luau panels with `placement = "composer"`, below the composer.
         let panels = host
-            .map(|h| h.read(cx).views())
+            .map(|h| h.read(cx).views(&self.summary.cwd))
             .filter(|views| !views.is_empty() && !docked)
             .map(|views| {
                 div()

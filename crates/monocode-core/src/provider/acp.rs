@@ -905,6 +905,25 @@ impl Protocol {
                         result["stopReason"].as_str().unwrap_or("")
                     ));
                 }
+                // A turn that ends with nothing to show looks like the app
+                // ignored the message. Say why instead: Hermes ends a turn
+                // quietly when its model cannot be reached or stops early.
+                if self.request.kind == Kind::Hermes
+                    && !self.acp.cancelling
+                    && !self.compact
+                    && !self.command_probe
+                    && !self.begun
+                    && self.tools.is_empty()
+                    && self.acp.background.is_empty()
+                {
+                    let reason = result["stopReason"].as_str().unwrap_or("");
+                    if reason != "cancelled" {
+                        return Err(format!(
+                            "Hermes Agent ended the turn without a reply ({}). Check that its model is running and selected with `hermes model`.",
+                            if reason.is_empty() { "no reason given" } else { reason }
+                        ));
+                    }
+                }
                 if self.request.kind == Kind::Hermes
                     && !self.acp.background.is_empty()
                     && !self.acp.cancelling
